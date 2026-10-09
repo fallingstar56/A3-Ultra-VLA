@@ -1,0 +1,12 @@
+syntax = "proto3";
+package aimdk.protocol;
+
+import public "aimdk/protocol/common/header.proto";
+import public "aimdk/protocol/ta/ta_whole_body_command.proto";
+
+// 10-frame whole-body reference window for real-time WBC inference.
+// topic: /wbc/infer/reference_window
+message TaWholeBodyReferenceWindow {
+  Header header = 1;
+  repeated TaWholeBodyCommand frames = 2;
+}

@@ -1,0 +1,58 @@
+syntax = "proto3";
+package aimdk.protocol;
+
+import public "aimdk/protocol/common/header.proto";
+import public "aimdk/protocol/common/joint.proto";
+import public "aimdk/protocol/ta/ta_whole_body_command.proto";
+
+// Joint state group for one body segment.
+message TaJointGroupState {
+  repeated JointState states = 1;
+}
+
+// IMU state in calibrated MC coordinates.
+message TaImuState {
+  // Quaternion [w, x, y, z].
+  repeated double quat_wxyz = 1 [packed = true];
+
+  // Angular velocity [x, y, z], unit: rad/s.
+  repeated double angular_velocity_xyz = 2 [packed = true];
+
+  // Linear acceleration [x, y, z], unit: m/s^2.
+  repeated double linear_acceleration_xyz = 3 [packed = true];
+}
+
+// Motion-control whole-body joint state.
+// topic: /wbc/whole_body_state
+message TaWholeBodyState {
+  TaJointLayout joint_layout = 1;
+
+  // Field numbers align with TaWholeBodyCommand leg/waist/head/arm fields.
+  // Order: left_hip_pitch, left_hip_roll, left_hip_yaw, left_knee,
+  // left_ankle_pitch, left_ankle_roll, right_hip_pitch, right_hip_roll,
+  // right_hip_yaw, right_knee, right_ankle_pitch, right_ankle_roll.
+  TaJointGroupState leg_state = 4;
+
+  // Order: waist_yaw, waist_roll, waist_pitch.
+  TaJointGroupState waist_state = 6;
+
+  // Order: head_yaw, head_pitch.
+  TaJointGroupState head_state = 7;
+
+  // Order: left_shoulder_pitch, left_shoulder_roll, left_shoulder_yaw,
+  // left_elbow, left_wrist_roll, left_wrist_pitch, left_wrist_yaw,
+  // right_shoulder_pitch, right_shoulder_roll, right_shoulder_yaw,
+  // right_elbow, right_wrist_roll, right_wrist_pitch, right_wrist_yaw.
+  TaJointGroupState arm_state = 8;
+
+  // Source topic: /body_drive/pelvis_imu/data.
+  TaImuState pelvis_imu = 11;
+
+  // Source topic: /body_drive/torso_imu/data.
+  TaImuState torso_imu = 12;
+}
+
+message TaWholeBodyStateChannel {
+  Header header = 1;
+  TaWholeBodyState data = 2;
+}

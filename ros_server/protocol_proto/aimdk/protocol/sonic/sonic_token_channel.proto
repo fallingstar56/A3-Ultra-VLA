@@ -1,0 +1,18 @@
+syntax = "proto3";
+package aimdk.protocol;
+
+import public "aimdk/protocol/common/header.proto";
+
+// SONIC A3 encoder-decoder 的 64D token wire 类型。
+// /sonic/token_input 使用此消息输入外部 token；执行时发布的 token_src
+// 也复用同一 wire 类型，但 topic 由 execution_publish 配置决定。
+message SonicToken {
+  int64 stamp_ns = 1;                 // 生产端时间戳；下游按 seq 判 fresh
+  repeated float encoded_token = 2;   // fixed dim = 64
+}
+
+// aimdk 标准 wrapper：Header + Data，pub/sub 共用同一 wire 类型。
+message SonicTokenChannel {
+  Header header = 1;    // 消息头
+  SonicToken data = 2;  // Token 数据
+}

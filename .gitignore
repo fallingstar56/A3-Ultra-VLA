@@ -1,0 +1,78 @@
+# A3 Ultra VLA edge deployment
+# Commit source code and documentation; keep local models, environments,
+# compiled inference artifacts, robot logs, and credentials out of Git.
+
+# --- Large pretrained/fine-tuned model assets (deployment-local) ---
+/models/
+/Cosmos-Reason2-2B/
+**/checkpoint-*/
+**/engines/
+*.safetensors
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.engine
+*.plan
+*.gguf
+*.ggml
+*.tflite
+*.h5
+*.hdf5
+*.npz
+
+# --- Virtual environments and locally installed Python dependencies ---
+/torch_venv/
+/trt_venv/
+.venv/
+venv/
+env/
+**/python_deps/
+**/site-packages/
+
+# --- Python caches and build artifacts ---
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# --- Local runtime, ROS recordings, and generated data ---
+.cache/
+logs/
+log/
+runs/
+outputs/
+tmp/
+temp/
+*.log
+*.bag
+*.db3
+*.mcap
+*.rosbag
+*.core
+core.*
+
+# --- Secrets and host-specific configuration ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*credentials*.json
+*secret*.json
+
+# --- Editors / OS ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+*~

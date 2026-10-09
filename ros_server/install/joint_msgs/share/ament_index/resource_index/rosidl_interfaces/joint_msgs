@@ -1,0 +1,8 @@
+msg/Command.idl
+msg/Command.msg
+msg/JointCommand.idl
+msg/JointCommand.msg
+msg/JointState.idl
+msg/JointState.msg
+msg/State.idl
+msg/State.msg
