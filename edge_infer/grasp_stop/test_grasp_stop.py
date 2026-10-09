@@ -118,6 +118,18 @@ class GateTests(unittest.TestCase):
         finally:
             gate.close()
 
+    def test_human_stop_latches_abort(self):
+        machine, _ = load_control_symbols()
+        gate = machine(grasp_stop_enabled=True)
+        try:
+            gate.arm_grasp()
+            gate.set_running("test")
+            gate.force_idle("keyboard p")
+            self.assertEqual(gate.status_snapshot()["grasp_state"], "HUMAN_ABORT")
+            self.assertFalse(gate.set_running("restart"))
+        finally:
+            gate.close()
+
     def test_http_complete_status(self):
         machine, server_factory = load_control_symbols()
         gate = machine(grasp_stop_enabled=True)

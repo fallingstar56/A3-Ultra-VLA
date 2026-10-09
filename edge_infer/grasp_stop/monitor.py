@@ -20,6 +20,11 @@ from detector import GraspDetector, PressureFrame, split_tactile
 LOCAL_HTTP = build_opener(ProxyHandler({}))
 
 
+def get_status(base_url: str) -> dict:
+    with LOCAL_HTTP.open(base_url.rstrip("/") + "/status", timeout=0.5) as response:
+        return json.load(response)
+
+
 def post(base_url: str, path: str) -> dict:
     request = Request(base_url.rstrip("/") + path, data=b"{}", method="POST",
                       headers={"Content-Type": "application/json"})
@@ -33,8 +38,7 @@ def post(base_url: str, path: str) -> dict:
 def await_cancel(base_url: str, stop_epoch: int, timeout: float = 2.0) -> None:
     end = time.monotonic() + timeout
     while time.monotonic() < end:
-        with LOCAL_HTTP.open(base_url.rstrip("/") + "/status", timeout=0.5) as response:
-            state = json.load(response)
+        state = get_status(base_url)
         if state.get("cancel_failed"):
             raise RuntimeError("model chunk cancellation failed")
         if int(state.get("cancel_ack_epoch", 0)) >= stop_epoch:
@@ -141,7 +145,8 @@ def main() -> int:
     finally:
         if armed and not stopped:
             try:
-                post(args.control_url, "/grasp/fault")
+                if get_status(args.control_url).get("grasp_state") == "ARMED":
+                    post(args.control_url, "/grasp/fault")
             except Exception as exc:
                 print(f"[grasp-stop] STOP DELIVERY FAILED: {exc}", file=sys.stderr)
         node.destroy_node()

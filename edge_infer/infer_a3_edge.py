@@ -1894,6 +1894,9 @@ class KeyStateMachine:
                 print("\n[ws] tasks (* = current):")
                 print(self.task_holder.listing())
             elif self.task_holder is not None and ch in "123456789":
+                if self.grasp_stop_enabled:
+                    print("\n[grasp-stop] task switching is disabled")
+                    continue
                 new = self.task_holder.switch(int(ch) - 1)
                 if new is not None:
                     print(f"\n[ws] → task[{ch}]: {new!r}(next infer tick)")
@@ -1930,6 +1933,11 @@ class KeyStateMachine:
             changed = self.state != self.IDLE
             if changed:
                 self.stop_epoch += 1
+                if self.grasp_stop_enabled and self.grasp_state == "ARMED":
+                    self.grasp_state = (
+                        "HUMAN_ABORT" if reason.startswith(("keyboard", "http /stop"))
+                        else "SAFETY_ABORT"
+                    )
             self.state = self.IDLE
         if changed:
             print(f"\n[ws] → IDLE ({reason})")
@@ -5263,7 +5271,9 @@ def main():
     # 6) Go.
     #    Upper-body: 在 run 前后各把 手臂+手+腰 复位到固定位姿 (镜像 A2 infer_a2_rtc.py
     #    的 robot.reset())。whole-body 不复位 —— 腿/骨盆在环, 单独 reset 上肢不安全。
-    do_reset = embodiment_kind == "upper_body" and not getattr(args, "no_reset", False)
+    do_reset = (embodiment_kind == "upper_body"
+                and not getattr(args, "no_reset", False)
+                and not args.grasp_stop_enabled)
     reset_hand = getattr(args, "reset_hand_pose", "open") != "none"
     hand_pose = getattr(args, "reset_hand_pose", "open")
     if do_reset:
