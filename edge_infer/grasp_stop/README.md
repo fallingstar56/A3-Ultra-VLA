@@ -13,6 +13,8 @@
 
 在 ADU 使用系统 Python 和 ROS 环境运行订阅进程；无 `--control` 时绝不发模型启动/停止请求：
 
+基线采集需要连续 1 秒数据；相邻样本间隔超过 200 ms 时重新采集。只读模式在基线完成后也会记录抓握分数，但不会 ARM 或判定任务完成。订阅仅保留最新一帧，控制请求先于日志落盘执行。
+
 ```bash
 source /agibot/software/v0/entry/env/env.sh
 /usr/bin/python3 edge_infer/grasp_stop/monitor.py --hand right \
@@ -48,5 +50,7 @@ source /agibot/software/v0/entry/env/env.sh
 ```
 
 推理程序的 `/start` 在未 ARM 时返回 409；完成或故障后永久锁存 IDLE，须重启推理进程才能进行新试次。监控进程每 50 ms 发本机心跳；推理进程 250 ms 未收到心跳就停止，防止监控退出后模型继续动作。抓取完成/故障时监控请求锁存，并等待取消 chunk 的回执；超时或失败会报错，现场按原安全流程接管。取消 chunk 不等于硬件急停，也不保证持续握力。
+
+人工停止在尚未 ARM、或已 ARM 但尚未启动时也会锁存中止，随后到达的 ARM/启动请求将被拒绝；重新试验需要重启推理进程。
 
 当前离线测试覆盖压力状态机、本机 HTTP 门控和并发 ROS worker 请求/回执配对；尚未在目标机器人上验证 ROS 压力字段、下游已发布动作窗口的尾动、实际取消延迟和持瓶稳定性。阈值留空时不能运行 `--control`。真机分级验收见部署仓库外的 `A3-Ultra-VLA-真机测试清单.md`。

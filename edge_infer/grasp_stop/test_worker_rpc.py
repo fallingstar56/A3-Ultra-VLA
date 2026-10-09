@@ -104,6 +104,44 @@ class WorkerRpcTests(unittest.TestCase):
         self.assertFalse(caller.is_alive())
         self.assertEqual(result["reply"], ("ok", 123))
 
+    def test_cancel_error_is_not_acknowledged_as_success(self):
+        errors = []
+
+        def cancel():
+            try:
+                self.client.cancel_chunk()
+            except RuntimeError as exc:
+                errors.append(str(exc))
+
+        caller = threading.Thread(target=cancel, daemon=True)
+        caller.start()
+        request_id = self.commands.get(timeout=1.0)[1]
+        self.responses.put(("rpc", request_id, "error", "cancel failed"))
+        caller.join(timeout=1.0)
+        self.assertFalse(caller.is_alive())
+        self.assertEqual(errors, ["ROS worker: cancel failed"])
+
+    def test_worker_exit_wakes_all_pending_calls(self):
+        errors = []
+
+        def call(command):
+            try:
+                self.client._call(command, timeout=10.0)
+            except RuntimeError as exc:
+                errors.append(str(exc))
+
+        callers = [threading.Thread(target=call, args=(cmd,), daemon=True)
+                   for cmd in ("snapshot", "cancel")]
+        for caller in callers:
+            caller.start()
+        for _ in callers:
+            self.commands.get(timeout=1.0)
+        self.responses.put(None)
+        for caller in callers:
+            caller.join(timeout=1.0)
+            self.assertFalse(caller.is_alive())
+        self.assertEqual(errors, ["ROS worker exited"] * 2)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -97,9 +97,12 @@ class GraspDetector:
                 and frame.source_stamp_ns <= self.last_source_stamp_ns):
             return self._fault("non_monotonic_source_stamp")
         if (self.last_received is not None
-                and frame.received_at - self.last_received > self.stale_seconds
-                and self.state != "BASELINING"):
-            return self._fault("sample_gap")
+                and frame.received_at - self.last_received > self.stale_seconds):
+            if self.state != "BASELINING":
+                return self._fault("sample_gap")
+            # A baseline must cover a contiguous second of live samples.
+            self.baseline_start = None
+            self.baseline_frames.clear()
         try:
             parts = split_tactile(frame, self.hand)
         except ValueError as exc:
@@ -124,8 +127,6 @@ class GraspDetector:
                 self.state = "READY"
             return self.state
 
-        if self.state == "READY":
-            return self.state
         if self.armed_at is not None and frame.received_at - self.armed_at > self.task_timeout:
             return self._fault("task_timeout")
         section_scores = {}
@@ -134,7 +135,9 @@ class GraspDetector:
             section_scores[name] = top3(delta)
         opponents = sorted((section_scores[n] for n in FINGERS[1:]), reverse=True)
         self.last_score = min(section_scores["thumb"], opponents[1])
-        if self.threshold is None:
+        # Read-only acquisition still records useful scores for calibration.
+        # It must never confirm a grasp or arm motion on its own.
+        if self.state == "READY" or self.threshold is None:
             return self.state
         if self.last_score >= self.threshold:
             if self.candidate_since is None:

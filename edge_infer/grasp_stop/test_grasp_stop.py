@@ -30,6 +30,22 @@ def frame(t: float, *, thumb=1.0, index=1.0, middle=1.0,
 
 
 class DetectorTests(unittest.TestCase):
+    def test_baseline_gap_requires_new_contiguous_window(self):
+        detector = GraspDetector(threshold=2)
+        detector.feed(frame(0))
+        self.assertEqual(detector.feed(frame(5)), "BASELINING")
+        for i in range(1, 21):
+            detector.feed(frame(5 + i * 0.05))
+        self.assertEqual(detector.state, "READY")
+
+    def test_readonly_sampling_reports_pressure_score(self):
+        detector = GraspDetector()
+        for i in range(21):
+            detector.feed(frame(i * 0.05))
+        detector.feed(frame(1.05, thumb=5, index=5, middle=5))
+        self.assertEqual(detector.state, "READY")
+        self.assertEqual(detector.last_score, 4.0)
+
     def baseline(self, threshold=2.0):
         detector = GraspDetector(threshold=threshold)
         for i in range(21):
@@ -104,10 +120,35 @@ def load_runner_stop_methods():
 
 
 class GateTests(unittest.TestCase):
+    def test_human_stop_before_start_prevents_later_start(self):
+        machine, _ = load_control_symbols()
+        for armed in (False, True):
+            with self.subTest(armed=armed):
+                gate = machine(grasp_stop_enabled=True)
+                try:
+                    if armed:
+                        gate.arm_grasp()
+                    gate.force_idle("http /stop (before start)")
+                    self.assertEqual(gate.status_snapshot()["grasp_state"], "HUMAN_ABORT")
+                    self.assertFalse(gate.arm_grasp())
+                    self.assertFalse(gate.heartbeat_grasp())
+                    self.assertFalse(gate.set_running("delayed start"))
+                finally:
+                    gate.close()
+
     def test_grasp_latch_reaches_robot_cancel(self):
         machine, _ = load_control_symbols()
         gate = machine(grasp_stop_enabled=True)
         stop_called = threading.Event()
+        cold_started = threading.Event()
+        cancel_acked = threading.Event()
+        original_ack = gate.ack_cancel
+
+        def ack_cancel(ok):
+            original_ack(ok)
+            cancel_acked.set()
+
+        gate.ack_cancel = ack_cancel
 
         class FakeRobot:
             def cancel_chunk(self):
@@ -129,16 +170,17 @@ class GateTests(unittest.TestCase):
         runner.Q = deque()
         runner.s_min = 1
         runner.max_delay_policy = 5
-        runner._cold_start_locked = lambda: True
+        runner._cold_start_locked = lambda: cold_started.set()
         loop = threading.Thread(target=runner._execution_loop)
         try:
             self.assertTrue(gate.arm_grasp())
             self.assertTrue(gate.heartbeat_grasp())
             self.assertTrue(gate.set_running("test"))
             loop.start()
-            time.sleep(0.02)
+            self.assertTrue(cold_started.wait(timeout=1.0))
             self.assertTrue(gate.latch_grasp("GRASP_CONFIRMED"))
             self.assertTrue(stop_called.wait(timeout=1.0))
+            self.assertTrue(cancel_acked.wait(timeout=1.0))
             status = gate.status_snapshot()
             self.assertEqual(status["state"], "IDLE")
             self.assertEqual(status["cancel_ack_epoch"], status["stop_epoch"])

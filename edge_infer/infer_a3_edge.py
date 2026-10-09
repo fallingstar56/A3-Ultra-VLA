@@ -1957,11 +1957,14 @@ class KeyStateMachine:
             changed = self.state != self.IDLE
             if changed:
                 self.stop_epoch += 1
-                if self.grasp_stop_enabled and self.grasp_state == "ARMED":
-                    self.grasp_state = (
-                        "HUMAN_ABORT" if reason.startswith(("keyboard", "http /stop"))
-                        else "SAFETY_ABORT"
-                    )
+            if self.grasp_stop_enabled and self.grasp_state in ("UNARMED", "ARMED"):
+                # Also latch a stop between /grasp/arm and /start, or a delayed
+                # start from the monitor could undo the operator's stop.
+                self.grasp_state = (
+                    "HUMAN_ABORT" if reason.startswith(("keyboard", "http /stop"))
+                    else "SAFETY_ABORT"
+                )
+                changed = True
             self.state = self.IDLE
         if changed:
             print(f"\n[ws] → IDLE ({reason})")

@@ -76,7 +76,7 @@ def main() -> int:
     class PressureNode(Node):
         def __init__(self):
             super().__init__("a3_grasp_stop_pressure")
-            qos = QoSProfile(history=QoSHistoryPolicy.KEEP_LAST, depth=10,
+            qos = QoSProfile(history=QoSHistoryPolicy.KEEP_LAST, depth=1,
                              reliability=QoSReliabilityPolicy.BEST_EFFORT)
             self.latest: PressureFrame | None = None
             self.seq = 0
@@ -98,6 +98,7 @@ def main() -> int:
     try:
         while rclpy.ok():
             rclpy.spin_once(node, timeout_sec=0.02)
+            item = None
             if node.seq != seen_seq and node.latest is not None:
                 seen_seq = node.seq
                 frame = node.latest
@@ -112,33 +113,38 @@ def main() -> int:
                         item["sections"] = split_tactile(frame, args.hand)
                     except ValueError as exc:
                         item["parse_error"] = str(exc)
-                    log_file.write(json.dumps(item, ensure_ascii=False) + "\n")
-                    log_file.flush()
-            state = detector.tick(time.monotonic())
-            if state == "READY" and args.control and not armed:
-                detector.arm(time.monotonic())
-                post(args.control_url, "/grasp/arm")
-                armed = True
-                post(args.control_url, "/grasp/heartbeat")
-                next_heartbeat = time.monotonic() + 0.05
-                post(args.control_url, "/start")
-                print("[grasp-stop] ARMED and model started", flush=True)
-            elif state == "GRASP_CONFIRMED" and armed:
-                result = post(args.control_url, "/grasp/complete")
-                stopped = True
-                await_cancel(args.control_url, int(result["stop_epoch"]))
-                print("[grasp-stop] contact confirmed; stop latched", flush=True)
-                return 0
-            elif state in ("SENSOR_UNAVAILABLE", "TIMEOUT"):
-                print(f"[grasp-stop] {state}: {detector.fault_reason}", file=sys.stderr)
-                if armed:
-                    result = post(args.control_url, "/grasp/fault")
+            try:
+                state = detector.tick(time.monotonic())
+                if state == "READY" and args.control and not armed:
+                    detector.arm(time.monotonic())
+                    post(args.control_url, "/grasp/arm")
+                    armed = True
+                    post(args.control_url, "/grasp/heartbeat")
+                    next_heartbeat = time.monotonic() + 0.05
+                    post(args.control_url, "/start")
+                    print("[grasp-stop] ARMED and model started", flush=True)
+                elif state == "GRASP_CONFIRMED" and armed:
+                    result = post(args.control_url, "/grasp/complete")
                     stopped = True
                     await_cancel(args.control_url, int(result["stop_epoch"]))
-                return 2
-            if armed and not stopped and time.monotonic() >= next_heartbeat:
-                post(args.control_url, "/grasp/heartbeat")
-                next_heartbeat = time.monotonic() + 0.05
+                    print("[grasp-stop] contact confirmed; stop latched", flush=True)
+                    return 0
+                elif state in ("SENSOR_UNAVAILABLE", "TIMEOUT"):
+                    print(f"[grasp-stop] {state}: {detector.fault_reason}", file=sys.stderr)
+                    if armed:
+                        result = post(args.control_url, "/grasp/fault")
+                        stopped = True
+                        await_cancel(args.control_url, int(result["stop_epoch"]))
+                    return 2
+                if armed and not stopped and time.monotonic() >= next_heartbeat:
+                    post(args.control_url, "/grasp/heartbeat")
+                    next_heartbeat = time.monotonic() + 0.05
+            finally:
+                # Send stop/start/heartbeat before potentially blocking disk IO.
+                # Also preserve the final sample when a terminal branch returns.
+                if item is not None:
+                    log_file.write(json.dumps(item, ensure_ascii=False) + "\n")
+                    log_file.flush()
     except (KeyboardInterrupt, URLError, OSError, RuntimeError) as exc:
         print(f"[grasp-stop] stopped: {exc}", file=sys.stderr)
         return 3
