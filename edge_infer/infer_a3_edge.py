@@ -1814,9 +1814,17 @@ class KeyStateMachine:
         task_holder: "TaskHolder | None" = None,
         *,
         auto_run: bool = False,
+        grasp_stop_enabled: bool = False,
     ) -> None:
         self.state = self.IDLE
         self.task_holder = task_holder
+        self.grasp_stop_enabled = grasp_stop_enabled
+        self._state_lock = threading.Lock()
+        self.grasp_state = "UNARMED" if grasp_stop_enabled else "DISABLED"
+        self.stop_epoch = 0
+        self.cancel_ack_epoch = 0
+        self.cancel_failed = False
+        self.grasp_heartbeat_at = 0.0
         self._stop = False
         # 'r' sets this; the main loop consumes it and runs the reset itself.
         # Resetting from the reader thread would race the inference loop for
@@ -1861,19 +1869,23 @@ class KeyStateMachine:
             if not r:
                 continue
             ch = sys.stdin.read(1)
-            if ch == "s" and self.state != self.RUNNING:
-                self.state = self.RUNNING
-                print("\n[ws] 已启动推理，开始发送动作片段")
-            elif ch == "p" and self.state != self.IDLE:
-                self.state = self.IDLE
-                print("\n[ws] 已暂停推理，机器人保持当前状态")
+            if ch == "s":
+                self.set_running("keyboard s")
+            elif ch == "p":
+                self.force_idle("keyboard p")
             elif ch == "r":
+                if self.grasp_stop_enabled:
+                    print("\n[grasp-stop] reset is disabled during a guarded task")
+                    continue
                 if self.state == self.RUNNING:
                     print("\n[ws] 'r' 忽略: 请先按 p 暂停再复位")
                 else:
                     self._reset_requested = True
                     print("\n[ws] → 复位到初始位姿 (dataset frame 0) ...")
             elif ch == "m":
+                if self.grasp_stop_enabled:
+                    print("\n[grasp-stop] mode switching is disabled")
+                    continue
                 if self.state == self.RUNNING:
                     print("\n[ws] 'm' 忽略: 请先按 p 暂停再切模式")
                 else:
@@ -1887,38 +1899,97 @@ class KeyStateMachine:
                     print(f"\n[ws] → task[{ch}]: {new!r}(next infer tick)")
 
     def is_running(self) -> bool:
-        return self.state == self.RUNNING
+        with self._state_lock:
+            if (self.grasp_stop_enabled and self.grasp_state == "ARMED"
+                    and self.state == self.RUNNING
+                    and time.monotonic() - self.grasp_heartbeat_at > 0.25):
+                self.grasp_state = "SENSOR_UNAVAILABLE"
+                self.state = self.IDLE
+                self.stop_epoch += 1
+                print("[grasp-stop] monitor heartbeat expired; cancelling chunk")
+            return self.state == self.RUNNING and (
+                not self.grasp_stop_enabled or self.grasp_state == "ARMED"
+            )
+
+    def set_running(self, reason: str) -> bool:
+        with self._state_lock:
+            if self.grasp_stop_enabled and (
+                self.grasp_state != "ARMED"
+                or time.monotonic() - self.grasp_heartbeat_at > 0.25
+            ):
+                print(f"[grasp-stop] start refused: {self.grasp_state} / no heartbeat")
+                return False
+            changed = self.state != self.RUNNING
+            self.state = self.RUNNING
+        if changed:
+            print(f"\n[ws] → RUNNING ({reason})")
+        return True
+
+    def force_idle(self, reason: str) -> None:
+        with self._state_lock:
+            changed = self.state != self.IDLE
+            if changed:
+                self.stop_epoch += 1
+            self.state = self.IDLE
+        if changed:
+            print(f"\n[ws] → IDLE ({reason})")
+
+    def arm_grasp(self) -> bool:
+        with self._state_lock:
+            if not self.grasp_stop_enabled or self.grasp_state != "UNARMED" or self.state != self.IDLE:
+                return False
+            self.grasp_state = "ARMED"
+            self.grasp_heartbeat_at = time.monotonic()
+            return True
+
+    def heartbeat_grasp(self) -> bool:
+        with self._state_lock:
+            if not self.grasp_stop_enabled or self.grasp_state != "ARMED":
+                return False
+            self.grasp_heartbeat_at = time.monotonic()
+            return True
+
+    def latch_grasp(self, result: str) -> bool:
+        with self._state_lock:
+            if not self.grasp_stop_enabled or self.grasp_state != "ARMED":
+                return False
+            self.grasp_state = result
+            if self.state == self.RUNNING:
+                self.stop_epoch += 1
+            self.state = self.IDLE
+        print(f"[grasp-stop] latched {result}; stop_epoch={self.stop_epoch}")
+        return True
+
+    def ack_cancel(self, ok: bool) -> None:
+        with self._state_lock:
+            if ok:
+                self.cancel_ack_epoch = self.stop_epoch
+            else:
+                self.cancel_failed = True
+
+    def status_snapshot(self) -> dict:
+        with self._state_lock:
+            return {
+                "state": self.state,
+                "grasp_state": self.grasp_state,
+                "stop_epoch": self.stop_epoch,
+                "cancel_ack_epoch": self.cancel_ack_epoch,
+                "cancel_failed": self.cancel_failed,
+            }
 
     def take_reset_request(self) -> bool:
-        """One-shot: True at most once per 'r' press. Called by the main loop
-        so the reset chunk is sent from the same thread that drives inference."""
+        """One-shot reset request consumed by the main loop."""
         if self._reset_requested:
             self._reset_requested = False
             return True
         return False
 
     def take_mode_switch_request(self) -> bool:
-        """One-shot: True at most once per 'm' press."""
+        """One-shot mode switch request consumed by the main loop."""
         if self._mode_switch_requested:
             self._mode_switch_requested = False
             return True
         return False
-
-    def set_running(self, reason: str) -> None:
-        """Force RUNNING from an external controller (e.g. the human-in-loop
-        HTTP /start endpoint). Mirrors pressing 's': the runner's execution
-        loop sees the IDLE→RUNNING edge and cold-starts a fresh chunk."""
-        if self.state != self.RUNNING:
-            self.state = self.RUNNING
-            print(f"\n[ws] → RUNNING ({reason})")
-
-    def force_idle(self, reason: str) -> None:
-        """Force a safe IDLE state after a runtime transport/control failure,
-        or from an external controller (human-in-loop HTTP /stop). Mirrors
-        pressing 'p': the runner cancels the server chunk and holds."""
-        if self.state != self.IDLE:
-            self.state = self.IDLE
-            print(f"\n[ws] → IDLE ({reason})")
 
     def close(self) -> None:
         self._stop = True
@@ -2075,6 +2146,7 @@ class AsyncRTCChunkTrainRunner:
         # stale send's compensating cancel could erase the new run's first
         # chunk.
         self._send_in_flight = False
+        self._deferred_cancel_ack = False
 
         # Delay ring buffer on the original policy axis. a3_server returns
         # this primary actual_delay in source_fps units; its wire delay is
@@ -2646,6 +2718,10 @@ class AsyncRTCChunkTrainRunner:
             print(f"  [Cancel] exception: {e}")
         finally:
             self.C.acquire()
+        if self._send_in_flight and ok:
+            self._deferred_cancel_ack = True
+        else:
+            self.key_sm.ack_cancel(bool(ok))
         self.A_cur_raw = None
         self.A_cur_state_dict = None
         self.A_cur_body31 = None
@@ -2777,6 +2853,9 @@ class AsyncRTCChunkTrainRunner:
             invalidated = self._post_send_pause_guard_locked(send_gen, "cold-start")
         finally:
             self._send_in_flight = False
+            if self._deferred_cancel_ack:
+                self.key_sm.ack_cancel(True)
+                self._deferred_cancel_ack = False
             self.C.notify_all()
         if invalidated:
             return False
@@ -3010,6 +3089,9 @@ class AsyncRTCChunkTrainRunner:
                     invalidated = self._post_send_pause_guard_locked(send_gen, "RTC")
                 finally:
                     self._send_in_flight = False
+                    if self._deferred_cancel_ack:
+                        self.key_sm.ack_cancel(True)
+                        self._deferred_cancel_ack = False
                     self.C.notify_all()
                 if invalidated:
                     continue
@@ -3800,6 +3882,7 @@ class AsyncRTCUpperBodyRunner:
         # in-flight chunk POST, including the cold-start POST.
         self._cancel_gen = 0
         self._send_in_flight = False
+        self._deferred_cancel_ack = False
 
     def _server_infer(self, obs, prefix_raw, delay):
         options = None
@@ -3940,6 +4023,9 @@ class AsyncRTCUpperBodyRunner:
             invalidated = self._post_send_pause_guard_locked(send_gen, "cold-start")
         finally:
             self._send_in_flight = False
+            if self._deferred_cancel_ack:
+                self.key_sm.ack_cancel(True)
+                self._deferred_cancel_ack = False
             self.C.notify_all()
         if invalidated:
             return False
@@ -3959,13 +4045,16 @@ class AsyncRTCUpperBodyRunner:
         my_gen = self._cancel_gen
         self.C.release()
         try:
-            self.robot.cancel_chunk()
-            ok = True
+            ok = self.robot.cancel_chunk() is not False
         except Exception as e:
             ok = False
             print(f"  [Cancel] exception: {e}")
         finally:
             self.C.acquire()
+        if self._send_in_flight and ok:
+            self._deferred_cancel_ack = True
+        else:
+            self.key_sm.ack_cancel(bool(ok))
         self.A_cur = None
         self.A_cur_raw = None
         self.A_cur_state = None
@@ -4091,6 +4180,9 @@ class AsyncRTCUpperBodyRunner:
                     invalidated = self._post_send_pause_guard_locked(send_gen, "RTC")
                 finally:
                     self._send_in_flight = False
+                    if self._deferred_cancel_ack:
+                        self.key_sm.ack_cancel(True)
+                        self._deferred_cancel_ack = False
                     self.C.notify_all()
                 if invalidated:
                     continue
@@ -4651,13 +4743,23 @@ def start_human_in_loop_server(key_sm: "KeyStateMachine", host: str, port: int):
         def _handle(self) -> None:
             path = (self.path.split("?", 1)[0]).rstrip("/") or "/"
             if path == "/start":
-                key_sm.set_running("http /start (human-in-loop)")
-                self._reply(200, {"ok": True, "action": "start", "state": key_sm.state})
+                ok = key_sm.set_running("http /start (human-in-loop)")
+                self._reply(200 if ok else 409, {"ok": ok, **key_sm.status_snapshot()})
             elif path == "/stop":
                 key_sm.force_idle("http /stop (human-in-loop → teleop)")
-                self._reply(200, {"ok": True, "action": "stop", "state": key_sm.state})
+                self._reply(200, {"ok": True, **key_sm.status_snapshot()})
+            elif path == "/grasp/arm":
+                ok = key_sm.arm_grasp()
+                self._reply(200 if ok else 409, {"ok": ok, **key_sm.status_snapshot()})
+            elif path == "/grasp/heartbeat":
+                ok = key_sm.heartbeat_grasp()
+                self._reply(200 if ok else 409, {"ok": ok, **key_sm.status_snapshot()})
+            elif path in ("/grasp/complete", "/grasp/fault"):
+                result = "GRASP_CONFIRMED" if path.endswith("complete") else "SENSOR_UNAVAILABLE"
+                ok = key_sm.latch_grasp(result)
+                self._reply(200 if ok else 409, {"ok": ok, **key_sm.status_snapshot()})
             elif path in ("/status", "/"):
-                self._reply(200, {"ok": True, "state": key_sm.state})
+                self._reply(200, {"ok": True, **key_sm.status_snapshot()})
             else:
                 self._reply(404, {
                     "ok": False,
@@ -4841,6 +4943,8 @@ def main():
                         "reach it).")
     p.add_argument("--human_in_loop_port", type=int, default=5100,
                    help="Bind port for the --human_in_loop HTTP control server.")
+    p.add_argument("--grasp-stop-enabled", action="store_true",
+                   help="Require local pressure monitor arm before start; latch on grasp/fault.")
     p.add_argument("--server-ready-timeout-s", type=float, default=120.0,
                    help="How long to poll a3_server /get_joint_states before "
                         "giving up. Ballpark: rsync + colcon build on the ADU "
@@ -4887,6 +4991,13 @@ def main():
                         "自动 (灵巧手 20D / 夹爪 2D)。")
 
     args = p.parse_args()
+    if args.grasp_stop_enabled:
+        if not args.human_in_loop or args.human_in_loop_host not in ("127.0.0.1", "localhost", "::1"):
+            p.error("--grasp-stop-enabled requires --human_in_loop true and localhost binding")
+        if args.mode != "rtc_chunk" or args.auto_run:
+            p.error("--grasp-stop-enabled requires --mode rtc_chunk without --auto-run")
+        if args.task != "抓瓶子":
+            p.error("--grasp-stop-enabled requires --task 抓瓶子")
     if getattr(args, "fps", None) is None:
         args.fps = args.policy_output_fps
 
@@ -5130,7 +5241,10 @@ def main():
     # 5) Task list + key state machine.
     tasks = _load_task_list(args.prompt_yaml, args.task)
     task_holder = TaskHolder(tasks)
-    key_sm = KeyStateMachine(task_holder=task_holder, auto_run=args.auto_run)
+    key_sm = KeyStateMachine(
+        task_holder=task_holder, auto_run=args.auto_run,
+        grasp_stop_enabled=args.grasp_stop_enabled,
+    )
 
     # 5.5) Human-in-the-loop: expose start/stop over HTTP (drives the same
     #      KeyStateMachine as the keyboard). Keyboard s/p still work alongside.
@@ -5216,7 +5330,8 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
-        if do_reset:
+        if do_reset and not (args.grasp_stop_enabled and
+                             key_sm.status_snapshot()["grasp_state"] == "GRASP_CONFIRMED"):
             # reset-end: runner 退出时已 cancel_chunk, server _*_current 停在模型最后
             # 一帧 —— 从"上一条 cmd"平滑复位, 不读 measured state (避免跟踪误差先倒退)。
             reset_upper_body_arm(
