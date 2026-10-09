@@ -643,24 +643,32 @@ def main() -> int:
     _log("ready")
 
     while True:
-        msg = recv_msg(stdin)
-        if msg is None:
+        envelope = recv_msg(stdin)
+        if envelope is None:
             break
+        if (not isinstance(envelope, tuple) or len(envelope) < 3
+                or envelope[0] != "rpc" or not isinstance(envelope[1], int)):
+            _log(f"invalid RPC request: {envelope!r}")
+            break
+        request_id, msg = envelope[1], envelope[2:]
         kind = msg[0]
+
+        def send_reply(status, *payload, _request_id=request_id):
+            with reply_lock:
+                send_msg(stdout, ("rpc", _request_id, status, *payload))
+
         try:
             if kind == "snapshot":
                 if args.embodiment != "whole_body":
                     raise RuntimeError("snapshot command requires whole_body worker")
                 timestamp = capture_whole_body_snapshot()
-                with reply_lock:
-                    send_msg(stdout, ("ok", timestamp))
+                send_reply("ok", timestamp)
             elif kind == "wb_chunk":
                 if args.embodiment != "whole_body":
                     raise RuntimeError("wb_chunk command requires whole_body worker")
                 _, chunk, chunk_fps, options = msg
                 resp = install_whole_body_chunk(chunk, chunk_fps, options)
-                with reply_lock:
-                    send_msg(stdout, ("ok", dict(resp or {})))
+                send_reply("ok", dict(resp or {}))
             elif kind == "wait":
                 # Mirrors a3_server's /send_chunk?wait=true: the side owning
                 # interp_pub blocks, like the reference client's server-side
@@ -673,7 +681,8 @@ def main() -> int:
                 # blocking wait would delay the 'p' cancel until the chunk ends.
                 _, settle_ms, timeout_ms = msg
 
-                def _wait_then_reply(settle_ms=settle_ms, timeout_ms=timeout_ms):
+                def _wait_then_reply(settle_ms=settle_ms, timeout_ms=timeout_ms,
+                                     reply=send_reply):
                     try:
                         node.interp_pub.wait_chunk_done(
                             settle_sec=max(0.0, float(settle_ms)) / 1000.0,
@@ -681,8 +690,7 @@ def main() -> int:
                         )
                     except Exception as exc:            # noqa: BLE001
                         _log(f"wait failed: {exc}")
-                    with reply_lock:
-                        send_msg(stdout, ("ok",))
+                    reply("ok")
 
                 threading.Thread(target=_wait_then_reply,
                                  name="chunk-wait", daemon=True).start()
@@ -719,8 +727,7 @@ def main() -> int:
                 except Exception:                       # noqa: BLE001
                     remaining = 0
                 meta[1] = remaining
-                with reply_lock:
-                    send_msg(stdout, ("ok", remaining))
+                send_reply("ok", remaining)
             elif kind == "swap":
                 # RTC path: one lock critical section in interp_pub reads the
                 # old chunk's played index and slices arm/hand/waist by the
@@ -741,30 +748,23 @@ def main() -> int:
                     chunk_fps=float(chunk_fps),
                     s_used_local=s_used_local,
                 )
-                with reply_lock:
-                    send_msg(stdout, ("ok", int((resp or {}).get("actual_delay", 0))))
+                send_reply("ok", int((resp or {}).get("actual_delay", 0)))
             elif kind == "cancel":
                 node.interp_pub.cancel_chunk()
-                with reply_lock:
-                    send_msg(stdout, ("ok",))
+                send_reply("ok")
             elif kind == "ping":
-                with reply_lock:
-                    send_msg(stdout, ("ok",))
+                send_reply("ok")
             elif kind == "set_speed":
                 node.interp_pub.set_send_fps(float(msg[1]))
-                with reply_lock:
-                    send_msg(stdout, ("ok",))
+                send_reply("ok")
             elif kind == "shutdown":
-                with reply_lock:
-                    send_msg(stdout, ("ok",))
+                send_reply("ok")
                 break
             else:
-                with reply_lock:
-                    send_msg(stdout, ("error", f"unknown command {kind!r}"))
+                send_reply("error", f"unknown command {kind!r}")
         except Exception as exc:                        # noqa: BLE001
             _log(f"command {kind!r} failed: {exc}")
-            with reply_lock:
-                send_msg(stdout, ("error", str(exc)))
+            send_reply("error", str(exc))
 
     _log("shutting down")
     try:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+from collections import deque
 import json
 import sys
 import threading
@@ -87,7 +88,66 @@ def load_control_symbols():
     return namespace["KeyStateMachine"], namespace["start_human_in_loop_server"]
 
 
+def load_runner_stop_methods():
+    source = (Path(__file__).resolve().parents[1] / "infer_a3_edge.py").read_text()
+    tree = ast.parse(source)
+    runner = next(node for node in tree.body
+                  if isinstance(node, ast.ClassDef)
+                  and node.name == "AsyncRTCChunkTrainRunner")
+    wanted = {"_execution_loop", "_cancel_and_reset_locked"}
+    methods = [node for node in runner.body
+               if isinstance(node, ast.FunctionDef) and node.name in wanted]
+    namespace = {"time": time}
+    exec(compile(ast.Module(body=methods, type_ignores=[]),
+                 "infer_a3_edge.py", "exec"), namespace)
+    return type("StopRunner", (), {name: namespace[name] for name in wanted})
+
+
 class GateTests(unittest.TestCase):
+    def test_grasp_latch_reaches_robot_cancel(self):
+        machine, _ = load_control_symbols()
+        gate = machine(grasp_stop_enabled=True)
+        stop_called = threading.Event()
+
+        class FakeRobot:
+            def cancel_chunk(self):
+                stop_called.set()
+                return True
+
+        runner = load_runner_stop_methods()()
+        runner.key_sm = gate
+        runner.robot = FakeRobot()
+        runner.C = threading.Condition()
+        runner.running = True
+        runner.interval = 0.005
+        runner.A_cur_raw = None
+        runner.t = 0
+        runner.action_horizon = 5
+        runner._cancel_gen = 0
+        runner._send_in_flight = False
+        runner._deferred_cancel_ack = False
+        runner.Q = deque()
+        runner.s_min = 1
+        runner.max_delay_policy = 5
+        runner._cold_start_locked = lambda: True
+        loop = threading.Thread(target=runner._execution_loop)
+        try:
+            self.assertTrue(gate.arm_grasp())
+            self.assertTrue(gate.heartbeat_grasp())
+            self.assertTrue(gate.set_running("test"))
+            loop.start()
+            time.sleep(0.02)
+            self.assertTrue(gate.latch_grasp("GRASP_CONFIRMED"))
+            self.assertTrue(stop_called.wait(timeout=1.0))
+            status = gate.status_snapshot()
+            self.assertEqual(status["state"], "IDLE")
+            self.assertEqual(status["cancel_ack_epoch"], status["stop_epoch"])
+        finally:
+            runner.running = False
+            if loop.ident is not None:
+                loop.join(timeout=1.0)
+            gate.close()
+
     def test_latch_blocks_restart_and_cancel_ack(self):
         machine, _ = load_control_symbols()
         gate = machine(grasp_stop_enabled=True)

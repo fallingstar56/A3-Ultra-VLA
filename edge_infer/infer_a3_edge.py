@@ -306,8 +306,11 @@ class SubprocA3Robot:
         self.cameras = list(cameras)
         self._last_speed_hz = 30.0
         self._send_lock = threading.Lock()
-        self._replies = []
         self._replies_cv = threading.Condition()
+        self._next_request_id = 1
+        self._pending_requests = set()
+        self._replies_by_id = {}
+        self._worker_error = None
         tag = uuid.uuid4().hex[:8]
 
         self._meta_shm = shared_memory.SharedMemory(
@@ -404,12 +407,9 @@ class SubprocA3Robot:
 
     # ---- command channel ----
     #
-    # One pipe, but two things can be outstanding at once: the main loop parks
-    # in "wait" while the key thread fires "cancel" for 'p'. So replies are not
-    # necessarily in send order, and a caller must not hold the channel while
-    # blocked. A reader thread owns stdout and routes each reply to whoever is
-    # waiting for it; sends are serialized separately and never block on a
-    # reply.
+    # A wait reply can arrive after a later cancel reply, and chunk send can
+    # overlap with cancel. Match every reply to its request ID; a cancel ack
+    # must never be inferred from another command's successful response.
     def _reader_loop(self):
         while True:
             try:
@@ -417,25 +417,49 @@ class SubprocA3Robot:
             except Exception:                            # noqa: BLE001
                 reply = None
             with self._replies_cv:
-                self._replies.append(reply)
+                if reply is None:
+                    self._worker_error = "ROS worker exited"
+                elif (not isinstance(reply, tuple) or len(reply) < 3
+                      or reply[0] != "rpc" or not isinstance(reply[1], int)):
+                    self._worker_error = f"ROS worker protocol mismatch: {reply!r}"
+                elif reply[1] in self._pending_requests:
+                    self._replies_by_id[reply[1]] = reply[2:]
+                # Late replies to timed-out calls are discarded.
                 self._replies_cv.notify_all()
-            if reply is None:
+            if self._worker_error is not None:
                 break
 
     def _call(self, *msg, timeout: float = 60.0):
         with self._send_lock:
-            self._W.send_msg(self.proc.stdin, msg)
+            with self._replies_cv:
+                if self._worker_error is not None:
+                    raise RuntimeError(self._worker_error)
+                request_id = self._next_request_id
+                self._next_request_id += 1
+                self._pending_requests.add(request_id)
+            try:
+                self._W.send_msg(self.proc.stdin, ("rpc", request_id, *msg))
+            except Exception:
+                with self._replies_cv:
+                    self._pending_requests.discard(request_id)
+                raise
         deadline = time.monotonic() + timeout
         with self._replies_cv:
-            while not self._replies:
-                if not self._replies_cv.wait(
-                        timeout=max(0.0, deadline - time.monotonic())):
-                    raise RuntimeError(f"ROS worker timed out on {msg[0]!r}")
-            reply = self._replies.pop(0)
-        if reply is None:
-            raise RuntimeError("ROS worker exited")
+            try:
+                while request_id not in self._replies_by_id:
+                    if self._worker_error is not None:
+                        raise RuntimeError(self._worker_error)
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise RuntimeError(f"ROS worker timed out on {msg[0]!r}")
+                    self._replies_cv.wait(timeout=remaining)
+                reply = self._replies_by_id.pop(request_id)
+            finally:
+                self._pending_requests.discard(request_id)
         if reply[0] == "error":
             raise RuntimeError(f"ROS worker: {reply[1]}")
+        if reply[0] != "ok":
+            raise RuntimeError(f"ROS worker invalid reply to {msg[0]!r}: {reply!r}")
         return reply
 
     @property
@@ -679,7 +703,7 @@ class SubprocA3Robot:
             return
         try:
             if self.proc.poll() is None:
-                self._W.send_msg(self.proc.stdin, ("shutdown",))
+                self._call("shutdown", timeout=5.0)
                 self.proc.wait(timeout=5)
         except Exception:                                # noqa: BLE001
             try:

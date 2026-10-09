@@ -28,10 +28,13 @@ python3 -m unittest discover -s edge_infer/grasp_stop -p 'test_*.py' -v
 
 ## 受控试验
 
-在已完成上述核实、现场人员监护和原有急停可用时，先启动推理进程并保持 IDLE。现有启动脚本可把附加参数传入推理程序：
+在已完成上述核实、现场人员监护和原有急停可用时，先启动推理进程并保持 IDLE。沿用递瓶 Demo 的 `/agibot/edge_deploy_minimal` 和 `check.sh`/`run.sh`，但必须显式启用本门控；原 Demo 的无参数 `run.sh` 会继续执行完整递送流程：
 
 ```bash
-A3_TASK='抓瓶子' bash edge_infer/run_a3_adu_wholebody_rtc.sh \
+cd /agibot/edge_deploy_minimal
+export A3_TASK='抓瓶子' A3_EXEC_STEPS=3
+bash check.sh --grasp-stop-enabled --human_in_loop true --human_in_loop_host 127.0.0.1
+bash run.sh \
   --grasp-stop-enabled --human_in_loop true --human_in_loop_host 127.0.0.1
 ```
 
@@ -46,4 +49,4 @@ source /agibot/software/v0/entry/env/env.sh
 
 推理程序的 `/start` 在未 ARM 时返回 409；完成或故障后永久锁存 IDLE，须重启推理进程才能进行新试次。监控进程每 50 ms 发本机心跳；推理进程 250 ms 未收到心跳就停止，防止监控退出后模型继续动作。抓取完成/故障时监控请求锁存，并等待取消 chunk 的回执；超时或失败会报错，现场按原安全流程接管。取消 chunk 不等于硬件急停，也不保证持续握力。
 
-目前代码只做离线和本机 HTTP 测试，尚未在目标机器人上验证 ROS 压力字段、实际取消延迟和持瓶稳定性。阈值留空时不能运行 `--control`。
+当前离线测试覆盖压力状态机、本机 HTTP 门控和并发 ROS worker 请求/回执配对；尚未在目标机器人上验证 ROS 压力字段、下游已发布动作窗口的尾动、实际取消延迟和持瓶稳定性。阈值留空时不能运行 `--control`。真机分级验收见部署仓库外的 `A3-Ultra-VLA-真机测试清单.md`。
