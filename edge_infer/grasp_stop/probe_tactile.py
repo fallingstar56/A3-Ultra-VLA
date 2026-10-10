@@ -42,7 +42,7 @@ def main():
         return list(samples)
 
     try:
-        input("双手不接触物体，按回车采空手基线：")
+        input("手张开且双手不接触物体；否则 Ctrl+C 停止。按回车采基线：")
         baseline_rows = capture(2.0)
         input(f"保持轻触【{label}】，按回车后继续保持 2 秒：")
         contact_rows = capture(2.0)
