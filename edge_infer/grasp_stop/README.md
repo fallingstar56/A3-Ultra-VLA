@@ -35,9 +35,9 @@ python3 -m unittest discover -s edge_infer/grasp_stop -p 'test_*.py' -v
 ```bash
 cd /agibot/edge_deploy_minimal
 export A3_TASK='抓瓶子' A3_EXEC_STEPS=3
-bash check.sh --grasp-stop-enabled --human_in_loop true --human_in_loop_host 127.0.0.1
+bash check.sh --grasp-stop-enabled --human_in_loop true --human_in_loop_host 127.0.0.1 --task '抓瓶子'
 bash run.sh \
-  --grasp-stop-enabled --human_in_loop true --human_in_loop_host 127.0.0.1
+  --grasp-stop-enabled --human_in_loop true --human_in_loop_host 127.0.0.1 --task '抓瓶子'
 ```
 
 在同一 ADU 的另一终端运行监控；该命令先采 1 秒空手基线，只有数据有效且阈值已显式填写时才调用本地 `/grasp/arm` 和 `/start`：

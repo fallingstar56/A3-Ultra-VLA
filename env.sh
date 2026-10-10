@@ -9,10 +9,17 @@ EDGE_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 CHECKPOINT="${A3_MODEL_PATH:-${EDGE_ROOT}/models/checkpoint-50000}"
 TORCH_SITE="${EDGE_ROOT}/torch_venv/lib/python3.12/site-packages"
 TRT_SITE="${EDGE_ROOT}/trt_venv/lib/python3.12/site-packages"
+EXPLICIT_A3_TASK="${A3_TASK:-}"
 
 if [[ -f "${CHECKPOINT}/deploy.env" ]]; then
   # shellcheck disable=SC1090
   source "${CHECKPOINT}/deploy.env"
+fi
+
+# An operator's task choice must take precedence over checkpoint defaults.
+# In particular, grasp-stop requires the exact task text "抓瓶子".
+if [[ -n "${EXPLICIT_A3_TASK}" ]]; then
+  export A3_TASK="${EXPLICIT_A3_TASK}"
 fi
 
 export A3_EDGE_ROOT="${EDGE_ROOT}"
