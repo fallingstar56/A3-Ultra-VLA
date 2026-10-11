@@ -13,9 +13,9 @@ class MonitorTests(unittest.TestCase):
     def test_completion_and_cancel_ack_precede_final_log_write(self):
         events = []
         clock = [0.0]
-        samples = [frame(i * 0.05, stamp=i + 1) for i in range(21)]
-        samples += [frame(t, thumb=5, index=5, middle=5, stamp=i + 22)
-                    for i, t in enumerate((1.05, 1.10, 1.21))]
+        samples = [frame(i * 0.05, stamp=i + 1) for i in range(31)]
+        samples += [frame(t, thumb=5, index=5, middle=5, stamp=i + 32)
+                    for i, t in enumerate((1.55, 1.60, 1.71))]
 
         class Node:
             def __init__(self, name):

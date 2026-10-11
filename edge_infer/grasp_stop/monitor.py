@@ -79,6 +79,7 @@ def main() -> int:
             qos = QoSProfile(history=QoSHistoryPolicy.KEEP_LAST, depth=1,
                              reliability=QoSReliabilityPolicy.BEST_EFFORT)
             self.latest: PressureFrame | None = None
+            self.latest_wall_time_ns = 0
             self.seq = 0
             self.create_subscription(JointState, "/motion/control/hand_joint_state",
                                      self.on_sample, qos)
@@ -86,7 +87,9 @@ def main() -> int:
         def on_sample(self, msg: JointState) -> None:
             self.seq += 1
             stamp = int(msg.header.stamp.sec) * 1_000_000_000 + int(msg.header.stamp.nanosec)
-            self.latest = PressureFrame(time.monotonic(), msg.header.frame_id,
+            received_at = time.monotonic()
+            self.latest_wall_time_ns = time.time_ns()
+            self.latest = PressureFrame(received_at, msg.header.frame_id,
                                         tuple(float(x) for x in msg.effort), stamp)
 
     rclpy.init()
@@ -105,9 +108,13 @@ def main() -> int:
                 state = detector.feed(frame)
                 if log_file is not None:
                     item = {"seq": seen_seq, "received_at": frame.received_at,
+                            "received_wall_time_ns": node.latest_wall_time_ns,
                             "source_stamp_ns": frame.source_stamp_ns,
                             "frame_id": frame.frame_id, "effort_len": len(frame.effort),
                             "effort_tail": frame.effort[-260:],
+                            "hand": args.hand, "threshold": args.threshold,
+                            "baseline": detector.baseline,
+                            "section_scores": detector.last_section_scores,
                             "state": state, "score": detector.last_score}
                     try:
                         item["sections"] = split_tactile(frame, args.hand)
@@ -122,19 +129,44 @@ def main() -> int:
                     post(args.control_url, "/grasp/heartbeat")
                     next_heartbeat = time.monotonic() + 0.05
                     post(args.control_url, "/start")
+                    if item is not None:
+                        item["control_event"] = {
+                            "name": "start", "at": time.monotonic(),
+                            "wall_time_ns": time.time_ns(),
+                        }
                     print("[grasp-stop] ARMED and model started", flush=True)
                 elif state == "GRASP_CONFIRMED" and armed:
+                    request_at = time.monotonic()
+                    request_wall_time_ns = time.time_ns()
                     result = post(args.control_url, "/grasp/complete")
                     stopped = True
                     await_cancel(args.control_url, int(result["stop_epoch"]))
+                    if item is not None:
+                        item["control_event"] = {
+                            "name": "complete", "request_at": request_at,
+                            "request_wall_time_ns": request_wall_time_ns,
+                            "cancel_ack_at": time.monotonic(),
+                            "cancel_ack_wall_time_ns": time.time_ns(),
+                            "stop_epoch": int(result["stop_epoch"]),
+                        }
                     print("[grasp-stop] contact confirmed; stop latched", flush=True)
                     return 0
                 elif state in ("SENSOR_UNAVAILABLE", "TIMEOUT"):
                     print(f"[grasp-stop] {state}: {detector.fault_reason}", file=sys.stderr)
                     if armed:
+                        request_at = time.monotonic()
+                        request_wall_time_ns = time.time_ns()
                         result = post(args.control_url, "/grasp/fault")
                         stopped = True
                         await_cancel(args.control_url, int(result["stop_epoch"]))
+                        if item is not None:
+                            item["control_event"] = {
+                                "name": "fault", "request_at": request_at,
+                                "request_wall_time_ns": request_wall_time_ns,
+                                "cancel_ack_at": time.monotonic(),
+                                "cancel_ack_wall_time_ns": time.time_ns(),
+                                "stop_epoch": int(result["stop_epoch"]),
+                            }
                     return 2
                 if armed and not stopped and time.monotonic() >= next_heartbeat:
                     post(args.control_url, "/grasp/heartbeat")

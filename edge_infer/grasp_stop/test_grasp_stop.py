@@ -34,24 +34,24 @@ class DetectorTests(unittest.TestCase):
         detector = GraspDetector(threshold=2)
         detector.feed(frame(0))
         self.assertEqual(detector.feed(frame(5)), "BASELINING")
-        for i in range(1, 21):
+        for i in range(1, 31):
             detector.feed(frame(5 + i * 0.05))
         self.assertEqual(detector.state, "READY")
 
     def test_readonly_sampling_reports_pressure_score(self):
         detector = GraspDetector()
-        for i in range(21):
+        for i in range(31):
             detector.feed(frame(i * 0.05))
-        detector.feed(frame(1.05, thumb=5, index=5, middle=5))
+        detector.feed(frame(1.55, thumb=5, index=5, middle=5))
         self.assertEqual(detector.state, "READY")
         self.assertEqual(detector.last_score, 4.0)
 
     def baseline(self, threshold=2.0):
         detector = GraspDetector(threshold=threshold)
-        for i in range(21):
+        for i in range(31):
             detector.feed(frame(i * 0.05, stamp=i + 1))
         self.assertEqual(detector.state, "READY")
-        detector.arm(1.0)
+        detector.arm(1.5)
         return detector
 
     def test_right_tail_layout_with_prefix(self):
@@ -60,34 +60,53 @@ class DetectorTests(unittest.TestCase):
 
     def test_sustained_thumb_two_fingers(self):
         detector = self.baseline()
-        self.assertEqual(detector.feed(frame(1.05, thumb=5, index=5, middle=5,
-                                             stamp=22)), "CONTACT_CANDIDATE")
-        self.assertEqual(detector.feed(frame(1.10, thumb=5, index=5, middle=5,
-                                             stamp=23)), "CONTACT_CANDIDATE")
-        self.assertEqual(detector.feed(frame(1.21, thumb=5, index=5, middle=5,
-                                             stamp=24)), "GRASP_CONFIRMED")
-        self.assertEqual(detector.feed(frame(1.26, stamp=25)), "GRASP_CONFIRMED")
+        self.assertEqual(detector.feed(frame(1.55, thumb=5, index=5, middle=5,
+                                             stamp=32)), "CONTACT_CANDIDATE")
+        self.assertEqual(detector.feed(frame(1.60, thumb=5, index=5, middle=5,
+                                             stamp=33)), "CONTACT_CANDIDATE")
+        self.assertEqual(detector.feed(frame(1.71, thumb=5, index=5, middle=5,
+                                             stamp=34)), "GRASP_CONFIRMED")
+        self.assertEqual(detector.feed(frame(1.76, stamp=35)), "GRASP_CONFIRMED")
 
     def test_one_opposing_finger_does_not_confirm(self):
         detector = self.baseline()
         for i in range(1, 6):
-            detector.feed(frame(1 + i * 0.04, thumb=5, index=5, middle=1,
-                                stamp=21 + i))
+            detector.feed(frame(1.5 + i * 0.04, thumb=5, index=5, middle=1,
+                                stamp=31 + i))
         self.assertEqual(detector.state, "ARMED")
 
-    def test_stale_and_all_zero_fail_closed(self):
+    def test_stale_fails_closed_but_zero_baseline_is_valid(self):
         detector = self.baseline()
-        self.assertEqual(detector.tick(1.21), "SENSOR_UNAVAILABLE")
+        self.assertEqual(detector.tick(1.71), "SENSOR_UNAVAILABLE")
         zeros = GraspDetector(threshold=2)
-        self.assertEqual(zeros.feed(PressureFrame(0, "O10Hand", (0.0,) * 260)),
-                         "SENSOR_UNAVAILABLE")
+        for i in range(31):
+            zeros.feed(PressureFrame(i * 0.05, "O10Hand", (0.0,) * 260))
+        self.assertEqual(zeros.state, "READY")
+        self.assertEqual(zeros.baseline["thumb"], 0.0)
+        zeros.arm(1.5)
+        self.assertEqual(zeros.feed(PressureFrame(1.55, "O10Hand", (0.0,) * 260)),
+                         "ARMED")
+
+    def test_avatar_top3_baseline_subtracted_after_section_metric(self):
+        detector = GraspDetector(threshold=40)
+
+        def patterned(t, added=False):
+            finger = [100.0] * 3 + [60.0 if added else 0.0] * 3 + [0.0] * 10
+            right = finger * 5 + [0.0] * 50
+            return PressureFrame(t, "O10Hand", tuple([0.0] * 130 + right))
+
+        for i in range(31):
+            detector.feed(patterned(i * 0.05))
+        detector.arm(1.5)
+        detector.feed(patterned(1.55, added=True))
+        self.assertEqual(detector.last_score, 0.0)
 
     def test_blank_threshold_cannot_arm(self):
         detector = GraspDetector()
-        for i in range(21):
+        for i in range(31):
             detector.feed(frame(i * 0.05, stamp=i + 1))
         with self.assertRaises(ValueError):
-            detector.arm(1.0)
+            detector.arm(1.5)
 
 
 def load_control_symbols():

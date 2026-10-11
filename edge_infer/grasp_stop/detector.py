@@ -1,7 +1,7 @@
 """Pure, ROS-independent O10Hand pressure detector.
 
-The pressure layout is a candidate from AVATAR. It must be validated on the
-specific robot before enabling motion. No hand command is issued here.
+Use the AVATAR tactile layout and top-three-per-section baseline metric.
+No hand command is issued here.
 """
 
 from __future__ import annotations
@@ -59,7 +59,7 @@ class GraspDetector:
     """
 
     def __init__(self, *, hand: str = "right", threshold: float | None = None,
-                 baseline_seconds: float = 1.0, dwell_seconds: float = 0.150,
+                 baseline_seconds: float = 1.5, dwell_seconds: float = 0.150,
                  stale_seconds: float = 0.200, task_timeout: float = 20.0):
         if hand not in ("left", "right"):
             raise ValueError("hand must be left or right")
@@ -74,13 +74,14 @@ class GraspDetector:
         self.state = "BASELINING"
         self.baseline_frames: list[dict[str, tuple[float, ...]]] = []
         self.baseline_start: float | None = None
-        self.baseline: dict[str, tuple[float, ...]] = {}
+        self.baseline: dict[str, float] = {}
         self.last_received: float | None = None
         self.last_source_stamp_ns = 0
         self.armed_at: float | None = None
         self.candidate_since: float | None = None
         self.candidate_count = 0
         self.last_score = 0.0
+        self.last_section_scores: dict[str, float] = {}
         self.fault_reason = ""
 
     def _fault(self, reason: str) -> str:
@@ -100,7 +101,7 @@ class GraspDetector:
                 and frame.received_at - self.last_received > self.stale_seconds):
             if self.state != "BASELINING":
                 return self._fault("sample_gap")
-            # A baseline must cover a contiguous second of live samples.
+            # A baseline must cover a contiguous live window.
             self.baseline_start = None
             self.baseline_frames.clear()
         try:
@@ -110,18 +111,16 @@ class GraspDetector:
         self.last_received = frame.received_at
         if frame.source_stamp_ns:
             self.last_source_stamp_ns = frame.source_stamp_ns
-        if all(v == 0 for section in parts.values() for v in section):
-            return self._fault("all_zero_tactile")
-
         if self.state == "BASELINING":
             if self.baseline_start is None:
                 self.baseline_start = frame.received_at
             self.baseline_frames.append(parts)
             if frame.received_at - self.baseline_start >= self.baseline_seconds:
+                # AVATAR measure_baseline: mean of each frame's top-three
+                # section metric. A zero-valued open-hand baseline is valid.
                 self.baseline = {
-                    name: tuple(statistics.median(sample[name][i]
-                                                  for sample in self.baseline_frames)
-                                for i in range(len(parts[name])))
+                    name: statistics.mean(top3(sample[name])
+                                          for sample in self.baseline_frames)
                     for name in parts
                 }
                 self.state = "READY"
@@ -131,8 +130,8 @@ class GraspDetector:
             return self._fault("task_timeout")
         section_scores = {}
         for name in FINGERS:
-            delta = [max(0.0, x - b) for x, b in zip(parts[name], self.baseline[name])]
-            section_scores[name] = top3(delta)
+            section_scores[name] = top3(parts[name]) - self.baseline[name]
+        self.last_section_scores = section_scores
         opponents = sorted((section_scores[n] for n in FINGERS[1:]), reverse=True)
         self.last_score = min(section_scores["thumb"], opponents[1])
         # Read-only acquisition still records useful scores for calibration.
