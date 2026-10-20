@@ -3,8 +3,12 @@
 A3 ADU whole-body 端侧推理的最小代码仓库。模型权重、Cosmos、ONNX、
 TensorRT engine、导出目录和运行记录不进入 Git。
 
-仓库保留实际推理链路、ROS server 依赖、ONNX 导出与 TensorRT 编译代码，
-并按部署要求保留 AArch64 ADU 使用的 `torch_venv` 和 `trt_venv`。
+仓库保留实际推理链路、ROS server 依赖、ONNX 导出与 TensorRT 编译代码。
+模型和 AArch64 ADU 的 `torch_venv`、`trt_venv` 保留在部署机器本地，
+不会随这份源代码上传。
+
+当前 `/agibot/edge_deploy_minimal11` 的右手抓瓶自动停止操作，见
+[ADU_右手抓瓶自动停止启动.md](ADU_右手抓瓶自动停止启动.md)。
 
 ## 目录
 
@@ -21,8 +25,8 @@ gr00t_deploy/
 │   ├── install/                # a3_server、joint_msgs、ros2_plugin_proto
 │   ├── src/                    # 对应 ROS package 源码
 │   └── protocol_proto/         # protobuf 源定义
-├── torch_venv/                 # AArch64/Thor PyTorch 推理环境
-├── trt_venv/                   # AArch64 TensorRT/ONNX 工具环境
+├── torch_venv/                 # ADU 本地 AArch64/Thor PyTorch 推理环境
+├── trt_venv/                   # ADU 本地 TensorRT/ONNX 工具环境
 ├── env.sh                      # 公共环境变量
 ├── prepare_checkpoint.sh       # 初始化新 checkpoint 与 deploy.env
 ├── check.sh                    # 完整预检，不发送动作
@@ -34,17 +38,10 @@ gr00t_deploy/
 
 ## 拉取代码
 
-虚拟环境中的两个大文件使用 Git LFS 存储。首次拉取时执行：
-
-```bash
-git lfs install
-git clone https://code.agibot.com/embodied_infra/gr00t_deploy.git
-cd gr00t_deploy
-git lfs pull
-```
-
-两个虚拟环境面向机器人 ADU 的 AArch64/Python 3.12 系统镜像，不是在普通
-x86_64 工作站上运行的通用环境。
+在 ADU 的已有部署目录更新源代码即可。模型权重、`torch_venv`、
+`trt_venv`、ROS 已构建的 `ros_server/install` 与 `_pb_gen` 必须在该机器上
+已经存在；`check.sh` 会检查这些运行依赖。两个虚拟环境面向机器人 ADU 的
+AArch64/Python 3.12 系统镜像。
 
 ## 准备模型
 

@@ -61,7 +61,7 @@ class MonitorTests(unittest.TestCase):
             events.append(path)
             return {"ok": True, "stop_epoch": 1}
 
-        argv = ["monitor.py", "--threshold", "2", "--control",
+        argv = ["monitor.py", "--profile", "none", "--threshold", "2", "--control",
                 "--confirm", "I_UNDERSTAND", "--log", "/unused/trial.jsonl"]
         with (patch.dict(sys.modules, modules), patch.object(sys, "argv", argv),
               patch.object(monitor.time, "monotonic", side_effect=lambda: clock[0]),

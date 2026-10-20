@@ -2,7 +2,8 @@
 """ADU ROS 2 pressure subscriber for the optional grasp-stop gate.
 
 Use /usr/bin/python3 with the robot's ROS environment. The default mode is
-read-only. Control mode requires an explicitly calibrated pressure threshold.
+read-only. The right-bottle profile supplies calibrated parameters; control
+still requires explicit --control and --confirm I_UNDERSTAND.
 """
 
 from __future__ import annotations
@@ -15,7 +16,8 @@ from pathlib import Path
 from urllib.error import URLError
 from urllib.request import ProxyHandler, Request, build_opener
 
-from detector import GraspDetector, PressureFrame, split_tactile
+from calibration import PROFILE_NAMES, resolve_profile
+from detector import CONTACT_MODES, GraspDetector, PressureFrame, split_tactile
 
 LOCAL_HTTP = build_opener(ProxyHandler({}))
 
@@ -50,8 +52,15 @@ def await_cancel(base_url: str, stop_epoch: int, timeout: float = 2.0) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--hand", choices=("left", "right"), default="right")
+    parser.add_argument("--profile", choices=PROFILE_NAMES,
+                        default="right_bottle_v1",
+                        help="Calibrated right bottle settings; 'none' restores explicit-only threshold")
     parser.add_argument("--threshold", type=float, default=None,
-                        help="Calibrated raw pressure threshold; intentionally blank by default")
+                        help="Override the profile pressure threshold")
+    parser.add_argument("--contact-mode", choices=CONTACT_MODES,
+                        default=None)
+    parser.add_argument("--dwell-seconds", type=float, default=None)
+    parser.add_argument("--task-timeout-seconds", type=float, default=None)
     parser.add_argument("--control", action="store_true",
                         help="Arm/start the model and stop it on grasp/fault")
     parser.add_argument("--confirm", default="")
@@ -59,6 +68,18 @@ def main() -> int:
     parser.add_argument("--log", type=Path, default=None,
                         help="Optional JSONL record; should be on ADU persistent data storage")
     args = parser.parse_args()
+    try:
+        settings = resolve_profile(
+            args.profile, args.hand, threshold=args.threshold,
+            contact_mode=args.contact_mode, dwell_seconds=args.dwell_seconds,
+            task_timeout_seconds=args.task_timeout_seconds,
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
+    args.threshold = settings.threshold
+    args.contact_mode = settings.contact_mode
+    args.dwell_seconds = settings.dwell_seconds
+    args.task_timeout_seconds = settings.task_timeout_seconds
     if args.control and (args.threshold is None or args.confirm != "I_UNDERSTAND"):
         parser.error("--control requires calibrated --threshold and --confirm I_UNDERSTAND")
 
@@ -67,7 +88,10 @@ def main() -> int:
     from rclpy.qos import QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
     from sensor_msgs.msg import JointState
 
-    detector = GraspDetector(hand=args.hand, threshold=args.threshold)
+    detector = GraspDetector(hand=args.hand, threshold=args.threshold,
+                            contact_mode=args.contact_mode,
+                            dwell_seconds=args.dwell_seconds,
+                            task_timeout=args.task_timeout_seconds)
     log_file = None
     if args.log is not None:
         args.log.parent.mkdir(parents=True, exist_ok=True)
@@ -113,6 +137,10 @@ def main() -> int:
                             "frame_id": frame.frame_id, "effort_len": len(frame.effort),
                             "effort_tail": frame.effort[-260:],
                             "hand": args.hand, "threshold": args.threshold,
+                            "profile": args.profile,
+                            "contact_mode": args.contact_mode,
+                            "dwell_seconds": args.dwell_seconds,
+                            "task_timeout_seconds": args.task_timeout_seconds,
                             "baseline": detector.baseline,
                             "section_scores": detector.last_section_scores,
                             "state": state, "score": detector.last_score}

@@ -16,6 +16,7 @@ LAYOUT = (("thumb", 16), ("index", 16), ("middle", 16),
 POINTS_PER_HAND = 130
 POINTS_BOTH = 260
 FINGERS = ("thumb", "index", "middle", "ring", "pinky")
+CONTACT_MODES = ("thumb_two_fingers", "thumb_index")
 
 
 @dataclass(frozen=True)
@@ -59,14 +60,22 @@ class GraspDetector:
     """
 
     def __init__(self, *, hand: str = "right", threshold: float | None = None,
+                 contact_mode: str = "thumb_two_fingers",
                  baseline_seconds: float = 1.5, dwell_seconds: float = 0.150,
                  stale_seconds: float = 0.200, task_timeout: float = 20.0):
         if hand not in ("left", "right"):
             raise ValueError("hand must be left or right")
         if threshold is not None and (not math.isfinite(threshold) or threshold <= 0):
             raise ValueError("threshold must be a finite positive number")
+        if contact_mode not in CONTACT_MODES:
+            raise ValueError(f"contact_mode must be one of {CONTACT_MODES}")
+        if not math.isfinite(dwell_seconds) or dwell_seconds <= 0:
+            raise ValueError("dwell_seconds must be a finite positive number")
+        if not math.isfinite(task_timeout) or task_timeout <= 0:
+            raise ValueError("task_timeout must be a finite positive number")
         self.hand = hand
         self.threshold = threshold
+        self.contact_mode = contact_mode
         self.baseline_seconds = baseline_seconds
         self.dwell_seconds = dwell_seconds
         self.stale_seconds = stale_seconds
@@ -132,8 +141,11 @@ class GraspDetector:
         for name in FINGERS:
             section_scores[name] = top3(parts[name]) - self.baseline[name]
         self.last_section_scores = section_scores
-        opponents = sorted((section_scores[n] for n in FINGERS[1:]), reverse=True)
-        self.last_score = min(section_scores["thumb"], opponents[1])
+        if self.contact_mode == "thumb_index":
+            self.last_score = min(section_scores["thumb"], section_scores["index"])
+        else:
+            opponents = sorted((section_scores[n] for n in FINGERS[1:]), reverse=True)
+            self.last_score = min(section_scores["thumb"], opponents[1])
         # Read-only acquisition still records useful scores for calibration.
         # It must never confirm a grasp or arm motion on its own.
         if self.state == "READY" or self.threshold is None:

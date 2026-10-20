@@ -55,8 +55,22 @@ temp/
 *.db3
 *.mcap
 *.rosbag
+*.jsonl
+*.mp4
+*.mov
+*.avi
+*.sqlite3
 *.core
 core.*
+
+# Robot recordings and local analysis reports stay on the workstation.
+/robot_trials/
+
+# Local agent state and an accidental root-level copy of a tactile probe.
+/.agents/
+/.aws/
+/.codex/
+/agi@10.42.10.11
 
 # --- Secrets and host-specific configuration ---
 .env

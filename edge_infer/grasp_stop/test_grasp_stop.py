@@ -13,6 +13,7 @@ from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import ProxyHandler, Request, build_opener
 
+from calibration import resolve_profile
 from detector import GraspDetector, PressureFrame, split_tactile
 
 
@@ -30,6 +31,33 @@ def frame(t: float, *, thumb=1.0, index=1.0, middle=1.0,
 
 
 class DetectorTests(unittest.TestCase):
+    def test_right_bottle_profile_and_left_hand_rejection(self):
+        settings = resolve_profile("right_bottle_v1", "right", threshold=None,
+                                   contact_mode=None, dwell_seconds=None,
+                                   task_timeout_seconds=None)
+        self.assertEqual((settings.threshold, settings.contact_mode,
+                          settings.dwell_seconds, settings.task_timeout_seconds),
+                         (20.0, "thumb_index", 1.5, 180.0))
+        with self.assertRaises(ValueError):
+            resolve_profile("right_bottle_v1", "left", threshold=None,
+                            contact_mode=None, dwell_seconds=None,
+                            task_timeout_seconds=None)
+
+        detector = GraspDetector(threshold=settings.threshold,
+                                 contact_mode=settings.contact_mode,
+                                 dwell_seconds=settings.dwell_seconds,
+                                 task_timeout=settings.task_timeout_seconds)
+        for i in range(31):
+            detector.feed(frame(i * 0.05, thumb=0, index=0, middle=0,
+                                stamp=i + 1))
+        detector.arm(1.5)
+        for i in range(31, 61):
+            detector.feed(frame(i * 0.05, thumb=30, index=30, middle=0,
+                                stamp=i + 1))
+        self.assertNotEqual(detector.state, "GRASP_CONFIRMED")
+        detector.feed(frame(3.06, thumb=30, index=30, middle=0, stamp=62))
+        self.assertEqual(detector.state, "GRASP_CONFIRMED")
+
     def test_baseline_gap_requires_new_contiguous_window(self):
         detector = GraspDetector(threshold=2)
         detector.feed(frame(0))
@@ -74,6 +102,34 @@ class DetectorTests(unittest.TestCase):
             detector.feed(frame(1.5 + i * 0.04, thumb=5, index=5, middle=1,
                                 stamp=31 + i))
         self.assertEqual(detector.state, "ARMED")
+
+    def test_explicit_thumb_index_mode_requires_sustained_both_fingers(self):
+        detector = GraspDetector(threshold=2, contact_mode="thumb_index",
+                                 dwell_seconds=0.15)
+        for i in range(31):
+            detector.feed(frame(i * 0.05, stamp=i + 1))
+        detector.arm(1.5)
+        self.assertEqual(detector.feed(frame(1.55, thumb=5, index=1, middle=1,
+                                             stamp=32)), "ARMED")
+        self.assertEqual(detector.feed(frame(1.60, thumb=5, index=5, middle=1,
+                                             stamp=33)), "CONTACT_CANDIDATE")
+        self.assertEqual(detector.feed(frame(1.70, thumb=5, index=5, middle=1,
+                                             stamp=34)), "CONTACT_CANDIDATE")
+        self.assertEqual(detector.feed(frame(1.76, thumb=5, index=5, middle=1,
+                                             stamp=35)), "GRASP_CONFIRMED")
+
+    def test_thumb_index_dwell_resets_after_contact_gap(self):
+        detector = GraspDetector(threshold=2, contact_mode="thumb_index",
+                                 dwell_seconds=0.15)
+        for i in range(31):
+            detector.feed(frame(i * 0.05, stamp=i + 1))
+        detector.arm(1.5)
+        for t, thumb, index, stamp in ((1.55, 5, 5, 32), (1.60, 5, 5, 33),
+                                       (1.65, 1, 5, 34), (1.70, 5, 5, 35),
+                                       (1.75, 5, 5, 36)):
+            detector.feed(frame(t, thumb=thumb, index=index, middle=1,
+                                stamp=stamp))
+        self.assertNotEqual(detector.state, "GRASP_CONFIRMED")
 
     def test_stale_fails_closed_but_zero_baseline_is_valid(self):
         detector = self.baseline()
