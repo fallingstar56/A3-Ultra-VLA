@@ -5031,8 +5031,6 @@ def main():
             p.error("--grasp-stop-enabled requires --human_in_loop true and localhost binding")
         if args.mode != "rtc_chunk" or args.auto_run:
             p.error("--grasp-stop-enabled requires --mode rtc_chunk without --auto-run")
-        if args.task != "抓瓶子":
-            p.error("--grasp-stop-enabled requires --task 抓瓶子")
     if getattr(args, "fps", None) is None:
         args.fps = args.policy_output_fps
 

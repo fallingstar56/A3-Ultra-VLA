@@ -16,8 +16,8 @@ if [[ -f "${CHECKPOINT}/deploy.env" ]]; then
   source "${CHECKPOINT}/deploy.env"
 fi
 
-# An operator's task choice must take precedence over checkpoint defaults.
-# In particular, grasp-stop requires the exact task text "抓瓶子".
+# An explicitly selected task takes precedence over checkpoint defaults.
+# Leave A3_TASK unset to use the checkpoint's task, as in the initial deployment.
 if [[ -n "${EXPLICIT_A3_TASK}" ]]; then
   export A3_TASK="${EXPLICIT_A3_TASK}"
 fi

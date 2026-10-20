@@ -1,6 +1,6 @@
 # ADU 拉取代码后：右手抓瓶自动停止
 
-本流程使用 `edge_infer/grasp_stop/calibration.py` 的 `right_bottle_v1`：右拇指加食指最低区域分数达到 20，连续 1.5 秒后锁存停止；任务超时 180 秒。只使用右手。日志保存在 `/agibot/grasp_stop/`。本流程的 `--control` 命令会自动调用 `/grasp/arm` 和 `/start`，机器人随即开始运动。
+本流程使用 `edge_infer/grasp_stop/calibration.py` 的 `right_bottle_v1`：右拇指加食指最低区域分数达到 20，连续 1.5 秒后锁存停止；任务超时 180 秒。只使用右手。日志保存在 `/agibot/grasp_stop/`。本流程的 `--control` 命令会自动调用 `/grasp/arm` 和 `/start`，机器人随即开始运动。VLA 的任务文本沿用 checkpoint 的 `deploy.env`；若没有该设置，则使用初始版启动器的默认文本 `A3U hands over the water bottle`。压力配置名称与模型任务文本无关。
 
 ## 1. MDU：WBT 模式
 
@@ -24,7 +24,7 @@ export ROS_LOCALHOST_ONLY=0
 export ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET
 cd /agibot/edge_deploy_minimal11
 export A3_MODEL_PATH=/agibot/edge_deploy_minimal11/models/checkpoint-50000
-export A3_TASK='抓瓶子'
+unset A3_TASK  # 使用原先成功推理时的 checkpoint/default 任务文本
 export A3_EXEC_STEPS=3
 export GRASP_TRIAL_DIR=/agibot/grasp_stop/auto_right_001
 set -o pipefail
@@ -52,13 +52,12 @@ bash check.sh \
   --grasp-stop-enabled \
   --human_in_loop true \
   --human_in_loop_host 127.0.0.1 \
-  --task '抓瓶子' \
   2>&1 | tee "$GRASP_TRIAL_DIR/preflight.log"
 
 sleep 5
 ```
 
-预检应显示 `sensor check passed` 和 `preflight passed; no action chunk was sent`。失败时停止在此处；预检不会发送动作 chunk。
+预检应显示 `sensor check passed` 和 `preflight passed; no action chunk was sent`。核对 `[a3-rtc] task:` 与原先成功推理时完全一致；若不一致，先核对 checkpoint 的 `deploy.env` 和原实验命令。失败时停止在此处；预检不会发送动作 chunk。
 
 ## 3. ADU 终端 B：启动推理，保持 IDLE
 
@@ -68,7 +67,7 @@ export ROS_LOCALHOST_ONLY=0
 export ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET
 cd /agibot/edge_deploy_minimal11
 export A3_MODEL_PATH=/agibot/edge_deploy_minimal11/models/checkpoint-50000
-export A3_TASK='抓瓶子'
+unset A3_TASK  # 与预检保持一致
 export A3_EXEC_STEPS=3
 export GRASP_TRIAL_DIR=/agibot/grasp_stop/auto_right_001
 set -o pipefail
@@ -77,7 +76,6 @@ bash run.sh \
   --grasp-stop-enabled \
   --human_in_loop true \
   --human_in_loop_host 127.0.0.1 \
-  --task '抓瓶子' \
   2>&1 | tee "$GRASP_TRIAL_DIR/infer.log"
 ```
 
