@@ -1927,13 +1927,14 @@ class KeyStateMachine:
 
     def is_running(self) -> bool:
         with self._state_lock:
+            heartbeat_age = time.monotonic() - self.grasp_heartbeat_at
             if (self.grasp_stop_enabled and self.grasp_state == "ARMED"
-                    and self.state == self.RUNNING
-                    and time.monotonic() - self.grasp_heartbeat_at > 0.25):
+                    and self.state == self.RUNNING and heartbeat_age > 0.25):
                 self.grasp_state = "SENSOR_UNAVAILABLE"
                 self.state = self.IDLE
                 self.stop_epoch += 1
-                print("[grasp-stop] monitor heartbeat expired; cancelling chunk")
+                print(f"[grasp-stop] monitor heartbeat expired "
+                      f"(age={heartbeat_age:.3f}s); cancelling chunk")
             return self.state == self.RUNNING and (
                 not self.grasp_stop_enabled or self.grasp_state == "ARMED"
             )
@@ -4738,6 +4739,38 @@ def _str2bool(v) -> bool:
     return str(v).strip().lower() in ("1", "true", "yes", "y", "on")
 
 
+def _prewarm_guarded_policy(policy_client, robot, obs_builder, task: str,
+                            max_delay: int) -> None:
+    """Capture cold and RTC model signatures while IDLE, before heartbeat arming.
+
+    This only reads an observation and runs the policy. It never installs or
+    publishes an action chunk. A failure aborts startup before /start exists.
+    """
+    print("[grasp-stop] prewarming cold/RTC inference while IDLE; no chunk sent", flush=True)
+    robot_obs = robot.get_observation(**obs_builder.fetch_kwargs())
+    if robot_obs is None:
+        raise RuntimeError("grasp-stop prewarm could not read a robot observation")
+    obs, _ = obs_builder.build(robot_obs, task)
+    _, info = policy_client.get_action(obs)
+    raw = info.get("action_pred_normalized") if isinstance(info, dict) else None
+    if raw is None:
+        raise RuntimeError("grasp-stop prewarm received no normalized action prefix")
+    prefix = np.asarray(raw, dtype=np.float32)
+    if prefix.ndim == 2:
+        prefix = prefix[None, ...]
+    if prefix.ndim != 3 or prefix.shape[0] != 1 or prefix.shape[1] < 2:
+        raise RuntimeError(f"grasp-stop prewarm received invalid prefix shape {prefix.shape}")
+    if max_delay < 2:
+        raise RuntimeError("grasp-stop RTC prewarm requires rtc_max_delay >= 2")
+    delay = min(3, max_delay - 1, prefix.shape[1] - 1)
+    policy_client.get_action(obs, options={
+        "rtc_mode": "train_time",
+        "rtc_delay": delay,
+        "action_prefix": prefix.copy(),
+    })
+    print("[grasp-stop] cold/RTC prewarm complete; still IDLE, no chunk sent", flush=True)
+
+
 def start_human_in_loop_server(key_sm: "KeyStateMachine", host: str, port: int):
     """Start a tiny HTTP control server for human-in-the-loop operation.
 
@@ -5274,6 +5307,17 @@ def main():
     # 5) Task list + key state machine.
     tasks = _load_task_list(args.prompt_yaml, args.task)
     task_holder = TaskHolder(tasks)
+    if (args.grasp_stop_enabled and embodiment_kind == "whole_body"
+            and getattr(policy_client, "_dit_cuda_graph_enabled", False)):
+        try:
+            _prewarm_guarded_policy(
+                policy_client, robot, obs_builder, task_holder.current(),
+                int(metadata["rtc_max_delay"]),
+            )
+        except Exception:
+            if inproc_robot is not None:
+                inproc_robot.close()
+            raise
     key_sm = KeyStateMachine(
         task_holder=task_holder, auto_run=args.auto_run,
         grasp_stop_enabled=args.grasp_stop_enabled,

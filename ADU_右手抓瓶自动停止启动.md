@@ -83,7 +83,7 @@ bash run.sh \
   2>&1 | tee "$GRASP_TRIAL_DIR/infer.log"
 ```
 
-等初始化完成。不要在这个终端按 `s`；不要调用 HTTP `/start`。此时应保持 `IDLE`、`UNARMED`。
+等初始化完成。启用 DiT CUDA Graph 时，受保护流程会在 `IDLE` 下先执行 cold/RTC 两种模型预热，不发送动作 chunk；应看到 `cold/RTC prewarm complete; still IDLE, no chunk sent`，之后 HTTP 控制服务才启动。不要在这个终端按 `s`；不要调用 HTTP `/start`。此时应保持 `IDLE`、`UNARMED`。
 
 ## 4. ADU 终端 C：确认状态并启动压力控制
 

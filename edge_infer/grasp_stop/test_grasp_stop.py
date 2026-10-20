@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 from collections import deque
 import json
+import numpy as np
 import sys
 import threading
 import time
@@ -177,6 +178,47 @@ def load_control_symbols():
     exec(compile(ast.Module(body=selected, type_ignores=[]), "infer_a3_edge.py", "exec"),
          namespace)
     return namespace["KeyStateMachine"], namespace["start_human_in_loop_server"]
+
+
+def load_prewarm():
+    source = (Path(__file__).resolve().parents[1] / "infer_a3_edge.py").read_text()
+    tree = ast.parse(source)
+    selected = [node for node in tree.body if isinstance(node, ast.FunctionDef)
+                and node.name == "_prewarm_guarded_policy"]
+    namespace = {"np": np}
+    exec(compile(ast.Module(body=selected, type_ignores=[]), "infer_a3_edge.py", "exec"),
+         namespace)
+    return namespace["_prewarm_guarded_policy"]
+
+
+class PrewarmTests(unittest.TestCase):
+    def test_prewarm_captures_both_signatures_without_sending_a_chunk(self):
+        calls = []
+
+        class Robot:
+            def get_observation(self, **kwargs):
+                return {"joints": "live"}
+
+        class Builder:
+            def fetch_kwargs(self):
+                return {"cameras": ["chest_front"]}
+
+            def build(self, observation, task):
+                self_task = task
+                assert self_task == "A3U hands over the water bottle"
+                return {"observation": observation}, None
+
+        class Policy:
+            def get_action(self, observation, options=None):
+                calls.append(options)
+                return {}, {"action_pred_normalized": np.zeros((1, 40, 37), dtype=np.float32)}
+
+        load_prewarm()(Policy(), Robot(), Builder(), "A3U hands over the water bottle", 19)
+        self.assertEqual(len(calls), 2)
+        self.assertIsNone(calls[0])
+        self.assertEqual(calls[1]["rtc_mode"], "train_time")
+        self.assertEqual(calls[1]["rtc_delay"], 3)
+        self.assertEqual(calls[1]["action_prefix"].shape, (1, 40, 37))
 
 
 def load_runner_stop_methods():
