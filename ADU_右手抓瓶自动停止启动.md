@@ -12,7 +12,7 @@ python3 /agibot/software/v0/config/motion_control/tools/mc_action_cli.py \
 python3 /agibot/software/v0/config/motion_control/tools/mc_action_cli.py --list
 ```
 
-确认当前为 `AVATAR`、`WHOLE_BODY_TRACKING`，右手空着，没有其他程序向手或 WBC 发送目标。现场人员准备接管、托瓶和急停。不要在 WBT 模式运行 MOTION 开手脚本。
+确认当前为 `AVATAR`、`WHOLE_BODY_TRACKING`，右手没有握持或接触物体，没有其他程序向手或 WBC 发送目标。保留原先成功推理时的右手初始姿态；原先是闭手，就不要额外张手。现场人员准备接管、托瓶和急停。不要在 WBT 模式运行 MOTION 开手脚本。
 
 ## 2. ADU 终端 A：环境、版本和无动作预检
 
@@ -99,7 +99,7 @@ curl --noproxy '*' -fsS http://127.0.0.1:5100/status \
   | tee "$GRASP_TRIAL_DIR/status_before.json"
 ```
 
-确认 JSON 中 `state` 为 `IDLE`、`grasp_state` 为 `UNARMED`。确认右手空着、没有接触瓶子，接着执行下面的命令。它先采集 1.5 秒空手基线，然后**自动启动 VLA**：
+确认 JSON 中 `state` 为 `IDLE`、`grasp_state` 为 `UNARMED`。确认右手没有接触瓶子，保持原先成功推理时的姿态（闭手也可以），接着执行下面的命令。它先采集 1.5 秒无接触的触觉基线，然后**自动启动 VLA**：
 
 ```bash
 /usr/bin/python3 edge_infer/grasp_stop/monitor.py \
