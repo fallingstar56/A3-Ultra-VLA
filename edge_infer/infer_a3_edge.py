@@ -2927,7 +2927,7 @@ class AsyncRTCChunkTrainRunner:
                         _ok = self._cold_start_locked()
                     else:
                         # RUNNING → IDLE: cancel + wipe.
-                        self._cancel_and_reset_locked("user pressed p")
+                        self._cancel_and_reset_locked("state changed to IDLE")
                 was_running = is_running
 
             if is_running:
@@ -4250,7 +4250,7 @@ class AsyncRTCUpperBodyRunner:
                     continue
             elif not is_run and was_running:
                 with self.C:
-                    self._cancel_locked("user pressed p")
+                    self._cancel_locked("state changed to IDLE")
                     self.C.notify_all()
             was_running = is_run
 

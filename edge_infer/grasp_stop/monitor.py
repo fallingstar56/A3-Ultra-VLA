@@ -11,9 +11,10 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import threading
 import time
 from pathlib import Path
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from urllib.request import ProxyHandler, Request, build_opener
 
 from calibration import PROFILE_NAMES, resolve_profile
@@ -30,8 +31,12 @@ def get_status(base_url: str) -> dict:
 def post(base_url: str, path: str) -> dict:
     request = Request(base_url.rstrip("/") + path, data=b"{}", method="POST",
                       headers={"Content-Type": "application/json"})
-    with LOCAL_HTTP.open(request, timeout=0.5) as response:
-        result = json.load(response)
+    try:
+        with LOCAL_HTTP.open(request, timeout=0.5) as response:
+            result = json.load(response)
+    except HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"{path} HTTP {exc.code}: {body}") from exc
     if not result.get("ok"):
         raise RuntimeError(f"{path} refused: {result}")
     return result
@@ -47,6 +52,48 @@ def await_cancel(base_url: str, stop_epoch: int, timeout: float = 2.0) -> None:
             return
         time.sleep(0.02)
     raise RuntimeError("model chunk cancellation was not acknowledged")
+
+
+class HeartbeatSender:
+    """Send heartbeats independently, but only while the monitor loop is live."""
+
+    def __init__(self, base_url: str, interval: float = 0.05,
+                 progress_timeout: float = 0.20):
+        self.base_url = base_url
+        self.interval = interval
+        self.progress_timeout = progress_timeout
+        self.last_progress_at = time.monotonic()
+        self.stop_event = threading.Event()
+        self.error: Exception | None = None
+        self.thread = threading.Thread(target=self._run, name="grasp-stop-heartbeat", daemon=True)
+
+    def start(self) -> None:
+        self.thread.start()
+
+    def mark_progress(self) -> None:
+        self.last_progress_at = time.monotonic()
+
+    def _run(self) -> None:
+        while not self.stop_event.wait(self.interval):
+            if time.monotonic() - self.last_progress_at > self.progress_timeout:
+                self.error = RuntimeError("monitor loop stopped processing pressure samples")
+                return
+            try:
+                post(self.base_url, "/grasp/heartbeat")
+            except (URLError, OSError, RuntimeError) as exc:
+                if not self.stop_event.is_set():
+                    self.error = exc
+                return
+
+    def check(self) -> None:
+        if self.error is not None:
+            raise RuntimeError(f"heartbeat failed: {self.error}") from self.error
+
+    def stop(self) -> None:
+        self.stop_event.set()
+
+    def join(self) -> None:
+        self.thread.join(timeout=1.0)
 
 
 def main() -> int:
@@ -121,7 +168,7 @@ def main() -> int:
     seen_seq = 0
     armed = False
     stopped = False
-    next_heartbeat = 0.0
+    heartbeat: HeartbeatSender | None = None
     try:
         while rclpy.ok():
             rclpy.spin_once(node, timeout_sec=0.02)
@@ -149,13 +196,18 @@ def main() -> int:
                     except ValueError as exc:
                         item["parse_error"] = str(exc)
             try:
+                if heartbeat is not None:
+                    heartbeat.check()
                 state = detector.tick(time.monotonic())
+                if heartbeat is not None:
+                    heartbeat.mark_progress()
                 if state == "READY" and args.control and not armed:
                     detector.arm(time.monotonic())
                     post(args.control_url, "/grasp/arm")
                     armed = True
                     post(args.control_url, "/grasp/heartbeat")
-                    next_heartbeat = time.monotonic() + 0.05
+                    heartbeat = HeartbeatSender(args.control_url)
+                    heartbeat.start()
                     post(args.control_url, "/start")
                     if item is not None:
                         item["control_event"] = {
@@ -164,6 +216,7 @@ def main() -> int:
                         }
                     print("[grasp-stop] ARMED and model started", flush=True)
                 elif state == "GRASP_CONFIRMED" and armed:
+                    heartbeat.stop()
                     request_at = time.monotonic()
                     request_wall_time_ns = time.time_ns()
                     result = post(args.control_url, "/grasp/complete")
@@ -182,6 +235,7 @@ def main() -> int:
                 elif state in ("SENSOR_UNAVAILABLE", "TIMEOUT"):
                     print(f"[grasp-stop] {state}: {detector.fault_reason}", file=sys.stderr)
                     if armed:
+                        heartbeat.stop()
                         request_at = time.monotonic()
                         request_wall_time_ns = time.time_ns()
                         result = post(args.control_url, "/grasp/fault")
@@ -196,12 +250,8 @@ def main() -> int:
                                 "stop_epoch": int(result["stop_epoch"]),
                             }
                     return 2
-                if armed and not stopped and time.monotonic() >= next_heartbeat:
-                    post(args.control_url, "/grasp/heartbeat")
-                    next_heartbeat = time.monotonic() + 0.05
             finally:
-                # Send stop/start/heartbeat before potentially blocking disk IO.
-                # Also preserve the final sample when a terminal branch returns.
+                # Preserve the final sample when a terminal branch returns.
                 if item is not None:
                     log_file.write(json.dumps(item, ensure_ascii=False) + "\n")
                     log_file.flush()
@@ -209,12 +259,16 @@ def main() -> int:
         print(f"[grasp-stop] stopped: {exc}", file=sys.stderr)
         return 3
     finally:
+        if heartbeat is not None:
+            heartbeat.stop()
         if armed and not stopped:
             try:
                 if get_status(args.control_url).get("grasp_state") == "ARMED":
                     post(args.control_url, "/grasp/fault")
             except Exception as exc:
                 print(f"[grasp-stop] STOP DELIVERY FAILED: {exc}", file=sys.stderr)
+        if heartbeat is not None:
+            heartbeat.join()
         node.destroy_node()
         rclpy.shutdown()
         if log_file is not None:

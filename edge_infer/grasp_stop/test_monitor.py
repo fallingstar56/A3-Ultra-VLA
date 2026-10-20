@@ -1,15 +1,56 @@
 """Monitor integration with simulated ROS messages; no motion or ROS runtime."""
 
 import sys
+import time
 import unittest
+from io import BytesIO
 from types import SimpleNamespace
 from unittest.mock import patch
+from urllib.error import HTTPError
 
 import monitor
 from test_grasp_stop import frame
 
 
 class MonitorTests(unittest.TestCase):
+    def test_heartbeat_continues_while_main_thread_is_busy(self):
+        calls = []
+        sender = monitor.HeartbeatSender("http://127.0.0.1:5100", interval=0.02)
+        with patch.object(monitor, "post", side_effect=lambda url, path: calls.append(path)):
+            sender.start()
+            try:
+                time.sleep(0.12)
+                sender.check()
+            finally:
+                sender.stop()
+                sender.join()
+        self.assertGreaterEqual(len(calls), 3)
+        self.assertTrue(all(path == "/grasp/heartbeat" for path in calls))
+
+    def test_heartbeat_stops_if_monitor_loop_stalls(self):
+        sender = monitor.HeartbeatSender("http://127.0.0.1:5100", interval=0.01,
+                                         progress_timeout=0.04)
+        with patch.object(monitor, "post", return_value={"ok": True}):
+            sender.start()
+            try:
+                time.sleep(0.10)
+                with self.assertRaisesRegex(RuntimeError, "monitor loop stopped"):
+                    sender.check()
+            finally:
+                sender.stop()
+                sender.join()
+
+    def test_http_conflict_reports_endpoint_and_server_state(self):
+        conflict = HTTPError(
+            "http://127.0.0.1:5100/grasp/heartbeat", 409, "Conflict", {},
+            BytesIO(b'{"grasp_state":"SENSOR_UNAVAILABLE","state":"IDLE"}'),
+        )
+        with patch.object(monitor.LOCAL_HTTP, "open", side_effect=conflict):
+            with self.assertRaises(RuntimeError) as caught:
+                monitor.post("http://127.0.0.1:5100", "/grasp/heartbeat")
+        self.assertIn("/grasp/heartbeat HTTP 409", str(caught.exception))
+        self.assertIn('"grasp_state":"SENSOR_UNAVAILABLE"', str(caught.exception))
+
     def test_completion_and_cancel_ack_precede_final_log_write(self):
         events = []
         clock = [0.0]

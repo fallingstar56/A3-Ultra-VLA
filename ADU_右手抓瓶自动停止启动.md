@@ -110,6 +110,8 @@ curl --noproxy '*' -fsS http://127.0.0.1:5100/status \
 
 看到 `[grasp-stop] ARMED and model started` 表示正在运行。看到 `contact confirmed; stop latched` 表示压力条件已触发，程序会等待 `cancel_chunk` 回执并退出。模型也可能因传感器故障或 180 秒超时而停止。
 
+若看到 `monitor heartbeat expired; cancelling chunk`，说明服务端超过 0.25 秒没有收到监控心跳，已将状态锁存为 `SENSOR_UNAVAILABLE` 并取消 chunk。检查 `/status` 中 `cancel_ack_epoch >= stop_epoch` 且 `cancel_failed=false`；该进程不能再次 `/start`，下一次运行需重启终端 B 的推理进程并使用新的试验目录。监控器的心跳由独立线程发送；若压力处理主循环停顿超过 0.2 秒，心跳线程也会停止，以保留失活保护。
+
 ## 5. 状态核对、人工中止与收尾
 
 在 ADU 的另一终端可以随时人工停止；现场急停仍按原机器人流程操作：
