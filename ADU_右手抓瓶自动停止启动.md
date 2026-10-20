@@ -27,6 +27,7 @@ export A3_MODEL_PATH=/agibot/edge_deploy_minimal11/models/checkpoint-50000
 unset A3_TASK  # 使用原先成功推理时的 checkpoint/default 任务文本
 export A3_EXEC_STEPS=3
 export GRASP_TRIAL_DIR=/agibot/grasp_stop/auto_right_001
+export A3_RECORD_CHUNKS_DIR="$GRASP_TRIAL_DIR/chunks"
 set -o pipefail
 
 test -f edge_infer/grasp_stop/calibration.py
@@ -34,6 +35,8 @@ test -f ros_server/install/setup.bash
 test -d ros_server/_pb_gen
 test -d "$A3_MODEL_PATH/engines"
 mkdir -p "$GRASP_TRIAL_DIR"
+grep -Fn 'requires --task 抓瓶子' edge_infer/infer_a3_edge.py || true
+grep -F 'class HeartbeatSender' edge_infer/grasp_stop/monitor.py
 date -Ins | tee "$GRASP_TRIAL_DIR/start_time.txt"
 sha256sum edge_infer/grasp_stop/{calibration,detector,monitor}.py \
   | tee "$GRASP_TRIAL_DIR/code_sha256.txt"
@@ -70,6 +73,7 @@ export A3_MODEL_PATH=/agibot/edge_deploy_minimal11/models/checkpoint-50000
 unset A3_TASK  # 与预检保持一致
 export A3_EXEC_STEPS=3
 export GRASP_TRIAL_DIR=/agibot/grasp_stop/auto_right_001
+export A3_RECORD_CHUNKS_DIR="$GRASP_TRIAL_DIR/chunks"
 set -o pipefail
 
 bash run.sh \
